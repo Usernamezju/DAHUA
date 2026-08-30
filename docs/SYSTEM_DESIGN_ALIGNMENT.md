@@ -9,8 +9,9 @@ research line.
   ProtoGCN processing.
 - Student: Kinetics-400-pretrained ProtoGCN, Campus6 six-class fine-tuning,
   with GAP semantic supervision used during training.
-- Teacher and safety: closed-set Qwen output, low confidence/margin/quality or
-  instability routing, structured validation, and human review on conflicts.
+- Teacher and safety: the closed-set Qwen route first requires student Top-1
+  confidence <= 0.30; reliable student predictions never call Qwen. Eligible
+  samples then use the five Boolean hard conditions and human conflict review.
 - Learning loop: pseudo-label filtering, replay, distillation, candidate
   validation and release gates are retained with their tests.
 - Deployment: the accepted M1KD QAT INT8 + Logits KD artifact is bundled as

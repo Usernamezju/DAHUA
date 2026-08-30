@@ -19,6 +19,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--predictions", required=True)
     value.add_argument("--artifact-root", required=True)
     value.add_argument("--model-dir", required=True)
+    value.add_argument("--confidence-threshold", type=float, default=0.30)
     value.add_argument("--margin-threshold", type=float, default=0.15)
     value.add_argument("--conflict-confidence-threshold", type=float, default=0.70)
     value.add_argument("--instability-threshold", type=float, default=0.60)
@@ -41,6 +42,7 @@ def main(argv=None) -> None:
         decision = evaluate_hard_sample(
             prediction,
             None,
+            confidence_threshold=args.confidence_threshold,
             margin_threshold=args.margin_threshold,
             conflict_confidence_threshold=args.conflict_confidence_threshold,
             instability_threshold=args.instability_threshold,

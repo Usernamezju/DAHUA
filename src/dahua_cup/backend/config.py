@@ -73,7 +73,7 @@ class Settings:
     teacher_command: str = ""
     teacher_routing_config: Optional[Path] = None
     joint_score_threshold: float = 0.20
-    teacher_trigger_confidence: float = 0.70
+    teacher_trigger_confidence: float = 0.30
     teacher_trigger_margin: float = 0.15
     pose_quality_threshold: float = 0.70
     student_instability_threshold: float = 0.60
@@ -119,7 +119,7 @@ class Settings:
             ffmpeg=shutil.which(os.environ.get("DAHUA_FFMPEG", "ffmpeg")),
             teacher_routing_config=routing_path if routing_path.is_file() else None,
             joint_score_threshold=_unit_interval_env("DAHUA_RTMPOSE_JOINT_SCORE_THRESHOLD", 0.20),
-            teacher_trigger_confidence=_unit_interval_env("DAHUA_TEACHER_TRIGGER_CONFIDENCE", float(routing_values.get("confidence_threshold", 0.70))),
+            teacher_trigger_confidence=_unit_interval_env("DAHUA_TEACHER_TRIGGER_CONFIDENCE", float(routing_values.get("confidence_threshold", 0.30))),
             teacher_trigger_margin=_unit_interval_env("DAHUA_TEACHER_TRIGGER_MARGIN", float(routing_values.get("margin_threshold", 0.15))),
             pose_quality_threshold=_unit_interval_env("DAHUA_POSE_QUALITY_THRESHOLD", float(routing_values.get("pose_quality_threshold", 0.70))),
             student_instability_threshold=_unit_interval_env("DAHUA_STUDENT_INSTABILITY_THRESHOLD", float(routing_values.get("instability_threshold", 0.60))),

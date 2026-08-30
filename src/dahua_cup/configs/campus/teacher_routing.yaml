@@ -1,7 +1,7 @@
 schema_version: teacher_routing.v1
 
 routing:
-  confidence_threshold: 0.70
+  confidence_threshold: 0.30
   margin_threshold: 0.15
   pose_quality_threshold: 0.70
   instability_threshold: 0.60

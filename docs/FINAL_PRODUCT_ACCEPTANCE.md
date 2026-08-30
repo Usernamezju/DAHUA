@@ -34,7 +34,7 @@ Web 是 Campus6 校园行为识别系统的交付界面，不是数据集筛选�
 `edge video -> RTMDet/RTMPose GPU -> COCO-17 skeleton -> M1KD INT8 GPU -> gate -> Qwen3-VL-8B (if needed) -> fusion / review -> audit / incremental queue`
 
 - 服务启动后自动消费已注册的 Campus6 骨架任务；浏览器只观察状态和提交人工结论。
-- Qwen 触发条件：学生低置信、Top-1/Top-2 间隔小、姿态质量差或预测不稳定。
+- 难例与 Qwen 的前置门控：学生 Top-1 置信度必须不高于 0.30；高于 0.30 时五项难例条件全部抑制且禁止调用 Qwen。通过前置门控后，再检查 Top-1/Top-2 间隔、教师分歧、高置信冲突、时序不稳定与类别稀有。
 - 融合规则：一致则自动确认；学生不确定且教师明确则采用教师；双方高置信冲突、教师不可用/异常、输入质量不足时进入人工审核。
 - 增量训练永远从 FP32 基线开始，经过评测后重新生成 INT8 候选；只有人工发布才能切换线上部署模型。
 

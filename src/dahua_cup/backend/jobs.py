@@ -21,6 +21,7 @@ from dahua_cup.pipeline.common import render_command
 from .baseline import Campus6Baseline
 from .config import Settings
 from .gpu import GPUManager
+from .hard_samples import evaluate_hard_sample
 from .store import ReviewStore
 
 
@@ -1043,23 +1044,47 @@ class JobManager:
             if action == "teacher":
                 if not paths["feature"].is_file() or not paths["pose_video"].is_file():
                     raise FileNotFoundError("尚无骨架特征或骨架视频，请先运行骨架提取")
-                self.store.update_job(
-                    job_id,
-                    progress=0.25,
-                    message="正在运行 Qwen3-VL 大模型分析",
+                prediction = self.prediction(job["sample_id"]) or {}
+                decision = evaluate_hard_sample(
+                    prediction,
+                    None,
+                    confidence_threshold=(
+                        self.settings.teacher_trigger_confidence
+                    ),
+                    margin_threshold=self.settings.teacher_trigger_margin,
+                    conflict_confidence_threshold=(
+                        self.settings.teacher_conflict_confidence
+                    ),
+                    instability_threshold=(
+                        self.settings.student_instability_threshold
+                    ),
                 )
-                logs.append(
-                    self._execute_teacher(job["sample_id"], video, paths)
-                )
-                if paths["prediction"].is_file():
-                    prediction = self.prediction(job["sample_id"]) or {}
+                if not decision["is_hard"]:
+                    self.store.update_job(
+                        job_id,
+                        progress=0.94,
+                        message="学生结果未通过 0.30 难例门控，已跳过 Qwen",
+                    )
+                    logs.append(
+                        "teacher_skipped=" + json.dumps(
+                            decision, ensure_ascii=False, sort_keys=True
+                        )
+                    )
+                else:
+                    self.store.update_job(
+                        job_id,
+                        progress=0.25,
+                        message="正在运行 Qwen3-VL 大模型分析",
+                    )
+                    logs.append(
+                        self._execute_teacher(job["sample_id"], video, paths)
+                    )
                     gate = dict(prediction.get("teacher_gate") or {})
                     gate.update(
                         {
                             "teacher_called": True,
                             "teacher_available": True,
-                            "manual_override": True,
-                            "reason": "manual_teacher_override",
+                            "reason": "student_uncertainty_gate",
                         }
                     )
                     self._record_teacher_gate(
@@ -1110,6 +1135,7 @@ class JobManager:
         decision = evaluate_hard_sample(
             value,
             None,
+            confidence_threshold=self.settings.teacher_trigger_confidence,
             margin_threshold=self.settings.teacher_trigger_margin,
             conflict_confidence_threshold=self.settings.teacher_conflict_confidence,
             instability_threshold=self.settings.student_instability_threshold,
@@ -1215,6 +1241,7 @@ class JobManager:
             decision = evaluate_hard_sample(
                 prediction,
                 teacher,
+                confidence_threshold=self.settings.teacher_trigger_confidence,
                 margin_threshold=self.settings.teacher_trigger_margin,
                 conflict_confidence_threshold=(
                     self.settings.teacher_conflict_confidence
@@ -1352,6 +1379,24 @@ class JobManager:
         sample = self.store.get_sample(sample_id)
         prediction = prediction or self.prediction(sample_id) or {}
         gate = prediction.get("teacher_gate") or {}
+        decision = evaluate_hard_sample(
+            prediction,
+            None,
+            confidence_threshold=self.settings.teacher_trigger_confidence,
+            margin_threshold=self.settings.teacher_trigger_margin,
+            conflict_confidence_threshold=(
+                self.settings.teacher_conflict_confidence
+            ),
+            instability_threshold=self.settings.student_instability_threshold,
+        )
+        if decision["confidence_gate"]["eligible"] is False:
+            return {
+                "status": "skipped",
+                "model": None,
+                "reason": decision["summary"],
+                "result": None,
+                "gate": gate,
+            }
         latest = next(
             (
                 job for job in sample.get("jobs", [])

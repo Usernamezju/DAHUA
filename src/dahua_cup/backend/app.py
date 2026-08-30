@@ -54,6 +54,7 @@ def _difficulty_checks(
     decision = evaluate_hard_sample(
         prediction,
         teacher,
+        confidence_threshold=settings.teacher_trigger_confidence,
         margin_threshold=settings.teacher_trigger_margin,
         conflict_confidence_threshold=settings.teacher_conflict_confidence,
         instability_threshold=settings.student_instability_threshold,
@@ -84,6 +85,7 @@ def _sample_payload(app: FastAPI, sample: dict) -> dict:
     decision = evaluate_hard_sample(
         prediction,
         teacher,
+        confidence_threshold=manager.settings.teacher_trigger_confidence,
         margin_threshold=manager.settings.teacher_trigger_margin,
         conflict_confidence_threshold=manager.settings.teacher_conflict_confidence,
         instability_threshold=manager.settings.student_instability_threshold,
