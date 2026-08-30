@@ -65,7 +65,9 @@ def _difficulty_checks(
     ]
 
 
-def _sample_payload(app: FastAPI, sample: dict) -> dict:
+def _sample_payload(
+    app: FastAPI, sample: dict, *, include_semantic_graph: bool = False
+) -> dict:
     sample = dict(sample)
     sample_id = sample["sample_id"]
     manager: JobManager = app.state.jobs
@@ -81,6 +83,16 @@ def _sample_payload(app: FastAPI, sample: dict) -> dict:
     prediction = manager.prediction(sample_id)
     teacher = manager.teacher_state(sample_id)
     sample["prediction"] = prediction
+    if include_semantic_graph:
+        semantic_graph = (
+            ((prediction or {}).get("student_evidence") or {}).get(
+                "semantic_graph"
+            )
+        )
+        baseline: Optional[Campus6Baseline] = app.state.baseline
+        if semantic_graph is None and baseline is not None and baseline.has(sample_id):
+            semantic_graph = baseline.semantic_graph(sample_id)
+        sample["semantic_graph"] = semantic_graph
     sample["teacher"] = teacher
     decision = evaluate_hard_sample(
         prediction,
@@ -145,7 +157,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         app.state.redacted_teacher_failures = store.redact_verbose_teacher_failures()
         annotations = settings.baseline_annotations()
         baseline = (
-            Campus6Baseline(annotations, settings.baseline_predictions())
+            Campus6Baseline(
+                annotations,
+                settings.baseline_predictions(),
+                review_temperature=settings.student_probability_temperature(),
+            )
             if annotations is not None else None
         )
         app.state.settings = settings
@@ -285,7 +301,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             sample = request.app.state.store.get_sample(sample_id)
         except KeyError:
             raise _not_found("sample", sample_id) from None
-        return _sample_payload(request.app, sample)
+        return _sample_payload(request.app, sample, include_semantic_graph=True)
 
     @app.get("/api/hard-samples")
     def hard_samples(

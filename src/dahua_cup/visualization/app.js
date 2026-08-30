@@ -201,6 +201,7 @@ async function selectInference(sampleId) {
     renderSampleOptions();
     setVideo($("#pose-video"), sample.artifacts.pose_video ? sample.media.pose : "");
     $("#pose-status").textContent = sample.artifacts.pose_video ? "已生成" : "未生成";
+    renderSemanticGraph(sample.semantic_graph || sample.prediction?.student_evidence?.semantic_graph);
     renderPrediction(sample.prediction);
     renderTeacher(sample.teacher, sample.pseudo_record, sample.prediction, sample.difficulty_checks);
     $("#review-note").value = sample.note || "";
@@ -208,6 +209,44 @@ async function selectInference(sampleId) {
     const queueIndex = pendingItems.findIndex(item => item.sample_id === sample.sample_id);
     if (queueIndex >= 0) state.reviewIndex = queueIndex;
   } catch(error){ toast(error.message,true); }
+}
+
+function percentage(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? `${(numeric * 100).toFixed(1)}%` : "—";
+}
+
+function decimal(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toFixed(3) : "—";
+}
+
+function renderSemanticGraph(graph) {
+  const root = $("#semantic-graph-summary");
+  if (!root) return;
+  const persons = Array.isArray(graph?.persons) ? graph.persons : [];
+  const relation = (Array.isArray(graph?.relations) ? graph.relations : []).find(
+    item => item?.type === "measured_distance"
+  );
+  const segment = Array.isArray(graph?.segments) ? graph.segments[0] : null;
+  if (!persons.length) {
+    root.className = "semantic-graph-summary empty-state";
+    root.textContent = "尚无可用骨架时空摘要";
+    return;
+  }
+  const personRows = persons.map((person, index) => {
+    const number = Number(person?.id);
+    const name = Number.isFinite(number) ? `人物 ${number + 1}` : `人物 ${index + 1}`;
+    return `<li><strong>${name}</strong><span>关键点覆盖 ${percentage(person?.pose_coverage)}</span><span>出现帧 ${percentage(person?.frame_coverage)}</span><span>平均速度 ${decimal(person?.mean_normalized_speed)}</span></li>`;
+  }).join("");
+  const relationText = relation
+    ? `最小距离 ${decimal(relation.minimum_normalized_distance)} · 平均距离 ${decimal(relation.mean_normalized_distance)} · 共同可见 ${percentage(relation.frame_coverage)}`
+    : "未同时观测到两人";
+  const timing = segment
+    ? `${segment.id || "s0"} · ${(Number(segment.start_ms || 0) / 1000).toFixed(1)}–${(Number(segment.end_ms || 0) / 1000).toFixed(1)} 秒`
+    : "—";
+  root.className = "semantic-graph-summary";
+  root.innerHTML = `<div class="semantic-graph-heading"><strong>骨架时空摘要</strong><span>时段 ${escapeHtml(timing)}</span></div><ul>${personRows}</ul><div class="semantic-relation"><strong>双人关系</strong><span>${escapeHtml(relationText)}</span></div>`;
 }
 
 function distributionValues(value) {
