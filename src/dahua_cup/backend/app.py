@@ -7,7 +7,7 @@ import mimetypes
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -19,6 +19,11 @@ from .baseline import Campus6Baseline
 from .config import Settings, path_is_within
 from .hard_samples import evaluate_hard_sample
 from .jobs import ACTIONS, JobManager
+from .macro_parameters import (
+    apply_values,
+    save_macro_parameter_file,
+    snapshot,
+)
 from .store import REVIEW_LABELS, ReviewStore
 
 
@@ -42,6 +47,10 @@ class GPUSettingsRequest(BaseModel):
     student_gpu_ids: List[int]
     teacher_gpu_ids: List[int] = Field(default_factory=list)
     teacher_auto: bool = True
+
+
+class MacroParametersRequest(BaseModel):
+    values: Dict[str, Any] = Field(default_factory=dict)
 
 
 def _not_found(kind: str, identifier: str) -> HTTPException:
@@ -275,6 +284,25 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/macro-parameters")
+    def macro_parameters(request: Request):
+        return snapshot(request.app.state.settings)
+
+    @app.put("/api/macro-parameters")
+    def update_macro_parameters(value: MacroParametersRequest, request: Request):
+        current: Settings = request.app.state.settings
+        try:
+            cleaned = apply_values(current, value.values)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        save_macro_parameter_file(current.macro_parameters_path, cleaned)
+        # The baseline review probabilities soften the cached temperatures
+        # in place, so keep its copy of the temperature aligned as well.
+        baseline: Optional[Campus6Baseline] = request.app.state.baseline
+        if baseline is not None:
+            baseline.review_temperature = current.review_temperature
+        return snapshot(current)
 
     @app.get("/api/dashboard")
     def dashboard(request: Request):

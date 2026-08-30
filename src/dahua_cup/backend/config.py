@@ -15,6 +15,8 @@ import yaml
 
 from dahua_cup.paths import CONFIG_ROOT, REPOSITORY_ROOT
 
+from dahua_cup.backend.macro_parameters import load_macro_parameter_file
+
 
 def path_is_within(path: Path, root: Path) -> bool:
     try:
@@ -48,6 +50,19 @@ def _nonnegative_int_env(name: str, default: int) -> int:
     return value
 
 
+def _positive_float_env(name: str, default: float) -> float:
+    configured = os.environ.get(name, "").strip()
+    if not configured:
+        return default
+    try:
+        value = float(configured)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive number") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a positive number")
+    return value
+
+
 def _routing_configuration(path: Path, *, required: bool) -> dict:
     if not path.is_file():
         if required:
@@ -59,7 +74,7 @@ def _routing_configuration(path: Path, *, required: bool) -> dict:
     return value
 
 
-@dataclass(frozen=True)
+@dataclass
 class Settings:
     repository_root: Path
     data_root: Path
@@ -85,6 +100,7 @@ class Settings:
     priority_student_instability: int = 800_000
     priority_teacher_review: int = 750_000
     priority_teacher_unavailable: int = 700_000
+    review_temperature: float = 5.0
     max_workers: int = 2
 
     @classmethod
@@ -109,6 +125,9 @@ class Settings:
         routing = _routing_configuration(routing_path, required=bool(routing_env))
         routing_values = dict(routing.get("routing") or {})
         priorities = dict(routing.get("review_priority") or {})
+        saved_macro = load_macro_parameter_file(
+            runtime_root / "settings" / "macro_parameters.json"
+        )
         return cls(
             repository_root=repository_root, data_root=data_root, runtime_root=runtime_root,
             source_root=source_root, manifest_path=manifest_path,
@@ -120,17 +139,18 @@ class Settings:
             teacher_command=os.environ.get("DAHUA_VIS_TEACHER_COMMAND", "").strip(),
             ffmpeg=shutil.which(os.environ.get("DAHUA_FFMPEG", "ffmpeg")),
             teacher_routing_config=routing_path if routing_path.is_file() else None,
-            joint_score_threshold=_unit_interval_env("DAHUA_RTMPOSE_JOINT_SCORE_THRESHOLD", 0.20),
-            teacher_trigger_confidence=_unit_interval_env("DAHUA_TEACHER_TRIGGER_CONFIDENCE", float(routing_values.get("confidence_threshold", 0.30))),
-            teacher_trigger_margin=_unit_interval_env("DAHUA_TEACHER_TRIGGER_MARGIN", float(routing_values.get("margin_threshold", 0.15))),
-            pose_quality_threshold=_unit_interval_env("DAHUA_POSE_QUALITY_THRESHOLD", float(routing_values.get("pose_quality_threshold", 0.70))),
+            joint_score_threshold=_unit_interval_env("DAHUA_RTMPOSE_JOINT_SCORE_THRESHOLD", float(saved_macro.get("joint_score_threshold", 0.20))),
+            teacher_trigger_confidence=_unit_interval_env("DAHUA_TEACHER_TRIGGER_CONFIDENCE", float(saved_macro.get("teacher_trigger_confidence", float(routing_values.get("confidence_threshold", 0.30))))),
+            teacher_trigger_margin=_unit_interval_env("DAHUA_TEACHER_TRIGGER_MARGIN", float(saved_macro.get("teacher_trigger_margin", float(routing_values.get("margin_threshold", 0.15))))),
+            pose_quality_threshold=_unit_interval_env("DAHUA_POSE_QUALITY_THRESHOLD", float(saved_macro.get("pose_quality_threshold", float(routing_values.get("pose_quality_threshold", 0.70))))),
             student_instability_threshold=_unit_interval_env("DAHUA_STUDENT_INSTABILITY_THRESHOLD", float(routing_values.get("instability_threshold", 0.60))),
-            teacher_conflict_confidence=_unit_interval_env("DAHUA_TEACHER_CONFLICT_CONFIDENCE", float(routing_values.get("teacher_conflict_confidence", 0.70))),
-            priority_teacher_conflict=_nonnegative_int_env("DAHUA_PRIORITY_TEACHER_CONFLICT", int(priorities.get("student_teacher_conflict", 1_000_000))),
-            priority_pose_quality=_nonnegative_int_env("DAHUA_PRIORITY_POSE_QUALITY", int(priorities.get("pose_quality_failure", 900_000))),
+            teacher_conflict_confidence=_unit_interval_env("DAHUA_TEACHER_CONFLICT_CONFIDENCE", float(saved_macro.get("teacher_conflict_confidence", float(routing_values.get("teacher_conflict_confidence", 0.70))))),
+            priority_teacher_conflict=_nonnegative_int_env("DAHUA_PRIORITY_TEACHER_CONFLICT", int(saved_macro.get("priority_teacher_conflict", int(priorities.get("student_teacher_conflict", 1_000_000))))),
+            priority_pose_quality=_nonnegative_int_env("DAHUA_PRIORITY_POSE_QUALITY", int(saved_macro.get("priority_pose_quality", int(priorities.get("pose_quality_failure", 900_000))))),
             priority_student_instability=_nonnegative_int_env("DAHUA_PRIORITY_STUDENT_INSTABILITY", int(priorities.get("student_instability", 800_000))),
-            priority_teacher_review=_nonnegative_int_env("DAHUA_PRIORITY_TEACHER_REVIEW", int(priorities.get("teacher_requested_review", 750_000))),
-            priority_teacher_unavailable=_nonnegative_int_env("DAHUA_PRIORITY_TEACHER_UNAVAILABLE", int(priorities.get("uncertain_teacher_unavailable", 700_000))),
+            priority_teacher_review=_nonnegative_int_env("DAHUA_PRIORITY_TEACHER_REVIEW", int(saved_macro.get("priority_teacher_review", int(priorities.get("teacher_requested_review", 750_000))))),
+            priority_teacher_unavailable=_nonnegative_int_env("DAHUA_PRIORITY_TEACHER_UNAVAILABLE", int(saved_macro.get("priority_teacher_unavailable", int(priorities.get("uncertain_teacher_unavailable", 700_000))))),
+            review_temperature=_positive_float_env("DAHUA_CAMPUS6_REVIEW_TEMPERATURE", _positive_float_env("DAHUA_CAMPUS6_PROBABILITY_TEMPERATURE", float(saved_macro.get("review_temperature", 5.0)))),
             max_workers=max(1, _nonnegative_int_env("DAHUA_VIS_MAX_WORKERS", 2)),
         )
 
@@ -153,6 +173,10 @@ class Settings:
     @property
     def gpu_settings_path(self) -> Path:
         return self.runtime_root / "settings" / "gpu.json"
+
+    @property
+    def macro_parameters_path(self) -> Path:
+        return self.runtime_root / "settings" / "macro_parameters.json"
 
     @property
     def campus6_backend(self) -> bool:
@@ -259,26 +283,12 @@ class Settings:
 
         The accepted cache retains its validation-fitted temperature as
         provenance.  Review uses a deliberately softer total temperature of
-        5.0 by default, while the legacy environment variable remains a
-        compatible override.
+        5.0 by default, while the legacy environment variables remain
+        compatible overrides.  The value is loaded at construction time from
+        the persisted macro-parameter file and can be updated live through
+        ``PUT /api/macro-parameters``.
         """
-        configured = os.environ.get(
-            "DAHUA_CAMPUS6_REVIEW_TEMPERATURE", ""
-        ).strip() or os.environ.get(
-            "DAHUA_CAMPUS6_PROBABILITY_TEMPERATURE", ""
-        ).strip()
-        value: object = configured or 5.0
-        try:
-            temperature = float(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "DAHUA_CAMPUS6_REVIEW_TEMPERATURE must be positive"
-            ) from exc
-        if not math.isfinite(temperature) or temperature <= 0:
-            raise ValueError(
-                "DAHUA_CAMPUS6_REVIEW_TEMPERATURE must be positive"
-            )
-        return temperature
+        return self.review_temperature
 
     def default_student_command(self) -> str:
         if self.student_command:

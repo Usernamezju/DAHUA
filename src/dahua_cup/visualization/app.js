@@ -14,7 +14,7 @@ const SAMPLE_STATUS_GROUPS = [
 ];
 
 const state = {
-  capabilities: {}, system: {}, gpus: {}, dashboard: {}, modelStatus: {}, trainingStatus: {}, samples: [], reviewSamples: [],
+  capabilities: {}, system: {}, gpus: {}, macroParameters: {}, dashboard: {}, modelStatus: {}, trainingStatus: {}, samples: [], reviewSamples: [],
   hardSamples: [], hardTotal: 0, hardSample: null,
   inferenceSample: null, reviewSample: null, reviewIndex: -1,
   activeJobId: null, jobSubmissionPending: false,
@@ -100,11 +100,11 @@ async function fetchAllHardSamples() {
 
 async function refreshAll(preserveSelection = true) {
   try {
-    const [capabilities, system, gpus, dashboard, modelStatus, trainingStatus, samples, reviewSamples, hard] = await Promise.all([
-      api("/api/capabilities"), api("/api/system"), api("/api/gpus"), api("/api/dashboard"), api("/api/models/status"), api("/api/training/status"),
+    const [capabilities, system, gpus, macroParameters, dashboard, modelStatus, trainingStatus, samples, reviewSamples, hard] = await Promise.all([
+      api("/api/capabilities"), api("/api/system"), api("/api/gpus"), api("/api/macro-parameters"), api("/api/dashboard"), api("/api/models/status"), api("/api/training/status"),
       fetchAllSamples(), fetchAllSamples({status:"pending"}), fetchAllHardSamples(),
     ]);
-    Object.assign(state, {capabilities, system, gpus, dashboard, modelStatus, trainingStatus, samples, reviewSamples, hardSamples:hard.items, hardTotal:hard.total});
+    Object.assign(state, {capabilities, system, gpus, macroParameters, dashboard, modelStatus, trainingStatus, samples, reviewSamples, hardSamples:hard.items, hardTotal:hard.total});
     $("#server-dot").classList.add("online");
     $("#server-label").textContent = "服务器在线";
     renderDashboard(); renderCapabilities(); renderSampleOptions(); renderHardOptions(); renderModels(); renderTrainingStatus(); renderSettings();
@@ -455,7 +455,71 @@ function renderTrainingStatus() {
 }
 
 function renderSettings() {
+  renderMacroParameters();
   renderGpuSettings();
+}
+
+function macroInputAttrs(type) {
+  if (type === "unit_interval") return 'step="0.01" min="0" max="1"';
+  if (type === "positive_float") return 'step="0.1" min="0.0001"';
+  return 'step="1000" min="0"';
+}
+
+function renderMacroParameters() {
+  const root = $("#macro-grid");
+  if (!root || !state.macroParameters?.parameters) return;
+  // Preserve in-progress edits across re-renders (refresh, apply).
+  const dirty = {};
+  $$("#macro-grid input[data-macro-key]").forEach(input => {
+    if (input.dataset.dirty === "1") dirty[input.dataset.macroKey] = input.value;
+  });
+  const groups = state.macroParameters.groups || {};
+  const parameters = state.macroParameters.parameters || [];
+  root.innerHTML = ["pose", "gate", "probability", "priority"].map(groupKey => {
+    const items = parameters.filter(item => item.group === groupKey);
+    if (!items.length) return "";
+    const cards = items.map(item => {
+      const sourceLabel = {environment:"环境变量",file:"已保存",default:"默认值"}[item.source] || item.source;
+      const disabled = item.source === "environment" ? "disabled" : "";
+      return `<label class="macro-item">
+        <span class="macro-item-head"><strong>${escapeHtml(item.name)}</strong><i class="macro-source ${item.source}">${escapeHtml(sourceLabel)}</i></span>
+        <small>${escapeHtml(item.description)}</small>
+        <span class="macro-input-row"><input type="number" data-macro-key="${escapeHtml(item.key)}" value="${item.value}" ${macroInputAttrs(item.type)} ${disabled}><b>默认 ${item.default}</b></span>
+      </label>`;
+    }).join("");
+    return `<div class="macro-group"><div class="macro-group-title">${escapeHtml(groups[groupKey] || groupKey)}</div><div class="macro-group-grid">${cards}</div></div>`;
+  }).join("");
+  Object.entries(dirty).forEach(([key, value]) => {
+    const input = root.querySelector(`input[data-macro-key="${key}"]`);
+    if (input && !input.disabled) { input.value = value; input.dataset.dirty = "1"; }
+  });
+  const updated = state.macroParameters.updated_at ? `最近更新：${formatTime(state.macroParameters.updated_at)}` : "";
+  if ($("#macro-updated")) $("#macro-updated").textContent = updated;
+}
+
+async function applyMacroParameters() {
+  const values = {};
+  $$("#macro-grid input[data-macro-key]").forEach(input => {
+    if (input.disabled) return;
+    values[input.dataset.macroKey] = Number(input.value);
+  });
+  if (!Object.keys(values).length) { toast("没有可应用的宏参数", true); return; }
+  try {
+    state.macroParameters = await api("/api/macro-parameters", {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values})});
+    $$("#macro-grid input[data-macro-key]").forEach(input => { delete input.dataset.dirty; });
+    renderMacroParameters();
+    toast("宏参数已应用并保存，后续新任务立即生效");
+  } catch (error) { toast(error.message, true); }
+}
+
+function resetMacroParameters() {
+  const list = state.macroParameters?.parameters || [];
+  $$("#macro-grid input[data-macro-key]").forEach(input => {
+    if (input.disabled) return;
+    const spec = list.find(item => item.key === input.dataset.macroKey);
+    if (spec) { input.value = spec.default; input.dataset.dirty = "1"; }
+  });
+  toast("输入已恢复为默认值，点击「应用宏参数」生效");
 }
 
 function renderGpuSettings() {
@@ -513,6 +577,9 @@ function bindEvents() {
   if($("#refresh-gpus"))$("#refresh-gpus").onclick=refreshGpus;
   if($("#save-gpu-settings"))$("#save-gpu-settings").onclick=saveGpuSettings;
   if($("#teacher-gpu-auto"))$("#teacher-gpu-auto").onchange=event=>$$('input[data-gpu-kind="teacher"]').forEach(input=>input.disabled=event.target.checked);
+  if($("#apply-macro-parameters"))$("#apply-macro-parameters").onclick=applyMacroParameters;
+  if($("#reset-macro-parameters"))$("#reset-macro-parameters").onclick=resetMacroParameters;
+  if($("#macro-grid"))$("#macro-grid").addEventListener("input",event=>{if(event.target.dataset.macroKey)event.target.dataset.dirty="1";});
   if($("#hard-sample-select"))$("#hard-sample-select").onchange=event=>selectHardSample(event.target.value);
   $("#previous-review").onclick=()=>selectReview(state.reviewIndex-1);$("#next-review").onclick=()=>selectReview(state.reviewIndex+1);
   $("#undo-review").onclick=async()=>{try{const sample=await api("/api/reviews/undo-last",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({actor:reviewer()})});toast(`已撤销 ${sample.sample_id} 的最近审核`);await refreshAll(true);}catch(error){toast(error.message,true)}};

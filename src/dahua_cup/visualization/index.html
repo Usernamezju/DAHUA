@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#0b111d">
   <title>校园行为语义理解平台</title>
-  <link rel="stylesheet" href="/styles.css?v=20260830-semantic-summary3">
+  <link rel="stylesheet" href="/styles.css?v=20260830-macro-params">
 </head>
 <body>
   <div class="app-shell">
@@ -115,12 +115,14 @@
           <div class="toolbar-spacer"></div><span class="status-pill online">Qwen 按 GPU 准入自动分析</span>
         </div>
         <div class="inspection-workspace">
-          <div class="video-grid workbench-videos"><article class="panel video-panel"><div class="panel-head"><div><span class="panel-kicker">HARD SAMPLE · SKELETON ONLY</span><h3>待人工审核难例骨架序列</h3></div><span id="hard-pose-status" class="artifact-tag">等待选择</span></div><div class="video-frame pose"><video id="hard-pose-video" controls loop playsinline></video><div class="video-placeholder">仅展示现有 COCO-17 骨架</div></div></article></div>
+          <div class="recognition-primary-grid">
+            <article class="panel video-panel"><div class="panel-head"><div><span class="panel-kicker">HARD SAMPLE · SKELETON ONLY</span><h3>待人工审核难例骨架序列</h3></div><span id="hard-pose-status" class="artifact-tag">等待选择</span></div><div class="video-frame pose"><video id="hard-pose-video" controls loop playsinline></video><div class="video-placeholder">仅展示现有 COCO-17 骨架</div></div></article>
+            <article class="panel evidence-panel compact-student-panel"><div class="panel-head"><div><span class="panel-kicker">STUDENT UNCERTAINTY</span><h3>M1KD INT8 校准后六类概率</h3></div><span id="hard-score" class="status-pill disabled">—</span></div><div id="hard-prediction-list" class="prediction-list empty-state">请选择难例</div></article>
+          </div>
           <div class="two-column">
-            <article class="panel evidence-panel"><div class="panel-head"><div><span class="panel-kicker">STUDENT UNCERTAINTY</span><h3>M1KD INT8 校准后六类概率</h3></div><span id="hard-score" class="status-pill disabled">—</span></div><div id="hard-prediction-list" class="prediction-list empty-state">请选择难例</div></article>
+            <article class="panel teacher-panel"><div class="panel-head"><div><span class="panel-kicker">QWEN3-VL-8B TEACHER</span><h3>难例语义分析</h3></div><span id="hard-teacher-status" class="status-pill disabled">等待分析</span></div><div id="hard-teacher-result" class="teacher-placeholder">请选择难例</div><div id="hard-teacher-distribution" class="prediction-list empty-state">尚无教师六类分布</div></article>
             <article class="panel evidence-panel"><div class="panel-head"><div><span class="panel-kicker">STRUCTURED HARD EVIDENCE</span><h3>难例判定证据</h3></div></div><div id="hard-evidence" class="evidence-details">请选择难例</div></article>
           </div>
-          <article class="panel teacher-panel"><div class="panel-head"><div><span class="panel-kicker">QWEN3-VL-8B TEACHER</span><h3>难例语义分析</h3></div><span id="hard-teacher-status" class="status-pill disabled">等待分析</span></div><div id="hard-teacher-result" class="teacher-placeholder">请选择难例</div><div id="hard-teacher-distribution" class="prediction-list empty-state">尚无教师六类分布</div></article>
         </div>
       </section>
 
@@ -147,7 +149,18 @@
       </section>
 
       <section class="page" id="page-settings">
-        <div class="page-intro"><div><span class="panel-kicker">DEVICE SCHEDULING</span><h2>推理设备调度</h2></div></div>
+        <div class="page-intro"><div><span class="panel-kicker">SYSTEM SETTINGS</span><h2>系统设置</h2></div></div>
+        <article class="panel settings-panel macro-settings-panel">
+          <div class="panel-head">
+            <div><span class="panel-kicker">MACRO PARAMETERS</span><h3>宏参数</h3><p class="muted">调节难例判定与复核队列的行为阈值，应用后对新任务立即生效。</p></div>
+            <span id="macro-status" class="status-pill online">运行中</span>
+          </div>
+          <div id="macro-grid" class="macro-grid"></div>
+          <div class="gpu-settings-foot">
+            <p class="macro-hint">已保存的值在服务重启后继续生效；环境变量显式设置时优先生效。<span id="macro-updated"></span></p>
+            <div class="macro-actions"><button id="reset-macro-parameters" class="button ghost">恢复默认值</button><button id="apply-macro-parameters" class="button primary">应用宏参数</button></div>
+          </div>
+        </article>
         <article class="panel settings-panel gpu-settings-panel">
           <div class="panel-head">
             <div><span class="panel-kicker">GPU POOL</span><h3>设备选择</h3></div>
@@ -163,6 +176,6 @@
     </main>
   </div>
   <div id="toast-root"></div>
-  <script src="/app.js?v=20260830-semantic-summary3" defer></script>
+  <script src="/app.js?v=20260830-macro-params" defer></script>
 </body>
 </html>
