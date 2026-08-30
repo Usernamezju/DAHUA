@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
-import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
@@ -17,11 +16,8 @@ from pydantic import BaseModel, Field
 from dahua_cup.semantic_teacher.schemas import LABELS
 
 from .config import Settings, path_is_within
-from .jobs import ACTIONS, JobManager, safe_name
+from .jobs import ACTIONS, JobManager
 from .store import REVIEW_LABELS, ReviewStore
-
-
-VIDEO_SUFFIXES = frozenset((".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"))
 
 
 class ReviewRequest(BaseModel):
@@ -53,27 +49,14 @@ def _sample_payload(app: FastAPI, sample: dict) -> dict:
     sample_id = sample["sample_id"]
     manager: JobManager = app.state.jobs
     sample["artifacts"] = manager.artifact_status(sample_id)
-    video = Path(sample["video_path"])
-    direct_mp4 = (
-        video.suffix.lower() == ".mp4"
-        and video.is_file()
-        and app.state.settings.video_path_is_allowed(video)
-    )
-    if direct_mp4:
-        sample["artifacts"]["preview"] = True
+    # Raw RGB paths are strictly server-side implementation details.  The
+    # browser only receives the derived pose video and inference artefacts.
+    sample.pop("video_path", None)
     sample["media"] = {
-        "preview": f"/api/samples/{sample_id}/media/preview",
-        "localized": f"/api/samples/{sample_id}/media/localized",
-        "localization": f"/api/samples/{sample_id}/media/localization",
         "pose": f"/api/samples/{sample_id}/media/pose",
-        "original": f"/api/samples/{sample_id}/media/original",
     }
     sample["prediction"] = manager.prediction(sample_id)
     sample["teacher"] = manager.teacher_state(sample_id)
-    sample["video_exists"] = (
-        video.is_file()
-        and app.state.settings.video_path_is_allowed(video)
-    )
     return sample
 
 
@@ -88,7 +71,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         app.state.store = store
         app.state.jobs = JobManager(settings, store)
         app.state.manifest_import = store.import_manifest(settings.manifest_path)
+        app.state.jobs.start_continuous_pipeline()
         yield
+        app.state.jobs.stop_continuous_pipeline()
         app.state.jobs.executor.shutdown(wait=False)
 
     app = FastAPI(
@@ -113,13 +98,21 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "data_root": str(current.data_root),
             "runtime_root": str(current.runtime_root),
             "source_root": str(current.source_root),
-            "upload_root": str(current.upload_root),
             "manifest_path": str(current.manifest_path),
             "database_path": str(current.database_path),
             "artifact_root": str(current.artifact_root),
             "active_student_checkpoint": str(
                 current.resolve_student_checkpoint() or ""
             ),
+            "student_runtime": {
+                "name": "M1FKD INT8",
+                "role": "Web inference deployment model",
+                "checkpoint": str(current.resolve_student_checkpoint() or ""),
+                "execution": "portable INT8 weights loaded through the deployment graph",
+                "training_baseline": str(
+                    current.training_baseline_checkpoint() or ""
+                ),
+            },
             "rtmpose_joint_score_threshold": current.joint_score_threshold,
             "manifest_import": request.app.state.manifest_import,
             "labels": list(LABELS),
@@ -152,6 +145,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 ),
             },
             "max_workers": current.max_workers,
+            "continuous_pipeline": request.app.state.jobs.continuous_status(),
         }
 
     @app.get("/api/gpus")
@@ -200,39 +194,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not current.manifest_path.is_file():
             raise HTTPException(status_code=404, detail=f"manifest not found: {current.manifest_path}")
         return request.app.state.store.import_manifest(current.manifest_path)
-
-    @app.post("/api/videos")
-    async def upload_video(
-        request: Request,
-        filename: str = Query(min_length=1, max_length=255),
-        sample_id: Optional[str] = Query(default=None, max_length=160),
-    ):
-        suffix = Path(filename).suffix.lower()
-        if suffix not in VIDEO_SUFFIXES:
-            raise HTTPException(status_code=400, detail="unsupported video extension")
-        identifier = safe_name(sample_id or f"upload_{uuid.uuid4().hex[:12]}")
-        clean_filename = Path(filename).name
-        destination = request.app.state.settings.upload_root / f"{identifier}_{clean_filename}"
-        if destination.exists():
-            raise HTTPException(status_code=409, detail="upload destination already exists")
-        received = 0
-        completed = False
-        try:
-            with destination.open("xb") as output:
-                async for chunk in request.stream():
-                    received += len(chunk)
-                    if received > 4 * 1024 * 1024 * 1024:
-                        raise HTTPException(status_code=413, detail="video exceeds 4 GiB limit")
-                    output.write(chunk)
-            if not received:
-                raise HTTPException(status_code=400, detail="empty upload")
-            sample = request.app.state.store.add_sample(identifier, destination)
-            completed = True
-        except Exception:
-            if destination.exists() and not completed:
-                destination.unlink(missing_ok=True)
-            raise
-        return _sample_payload(request.app, sample)
 
     @app.post("/api/samples/{sample_id}/review")
     def submit_review(sample_id: str, value: ReviewRequest, request: Request):
@@ -308,24 +269,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         except KeyError:
             raise _not_found("sample", sample_id) from None
         paths = request.app.state.jobs.artifacts(sample_id)
-        if kind == "original":
-            path = Path(sample["video_path"])
-            if not request.app.state.settings.video_path_is_allowed(path):
-                raise HTTPException(status_code=403, detail="video is outside configured server data roots")
-        elif kind == "preview":
-            generated = paths["preview"]
-            source = Path(sample["video_path"])
-            if generated.is_file() and generated.with_suffix(generated.suffix + ".ready").is_file():
-                path = generated
-            elif source.suffix.lower() == ".mp4" and request.app.state.settings.video_path_is_allowed(source):
-                path = source
-            else:
-                path = generated
-        elif kind == "pose":
+        if kind == "pose":
             path = paths["pose_video"]
-        elif kind == "localized":
-            path = paths["localized_video"]
-        elif kind in {"feature", "prediction", "localization"}:
+        elif kind in {"feature", "prediction"}:
             path = paths[kind]
         else:
             raise HTTPException(status_code=404, detail="unknown media kind")

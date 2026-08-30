@@ -105,7 +105,7 @@ def main(argv=None):
         teacher_versions[output.sample_id] = str(
             provenance.get("teacher_model_version")
             or row.get("model")
-            or "Qwen3-VL-32B-Instruct"
+            or "Qwen3-VL-8B-Instruct"
         )
     students = {row["sample_id"]: row for row in read_jsonl(args.student_jsonl)}
     records = []

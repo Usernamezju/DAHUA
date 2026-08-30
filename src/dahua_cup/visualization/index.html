@@ -17,8 +17,10 @@
       </div>
       <nav id="main-nav">
         <button class="nav-item active" data-page="dashboard" title="运行总览"><i>⌂</i><span>运行总览</span></button>
-        <button class="nav-item" data-page="inference" title="推理审核台"><i>▶</i><span>推理审核台</span><b id="pending-badge">0</b></button>
-        <button class="nav-item" data-page="dataset" title="数据集"><i>▦</i><span>数据集</span></button>
+        <button class="nav-item" data-page="inference" title="行为识别结果"><i>▶</i><span>识别结果</span><b id="pending-badge">0</b></button>
+        <button class="nav-item" data-page="reasoning" title="语义理解与推理依据"><i>◇</i><span>语义依据</span></button>
+        <button class="nav-item" data-page="privacy" title="Skeleton 隐私模式"><i>◌</i><span>隐私模式</span></button>
+        <button class="nav-item" data-page="dataset" title="审计记录"><i>▦</i><span>审计记录</span></button>
         <div class="nav-label">训练与发布</div>
         <button class="nav-item" data-page="evolution" title="训练闭环"><i>⌁</i><span>训练闭环</span></button>
         <button class="nav-item" data-page="models" title="模型管理"><i>◈</i><span>模型管理</span></button>
@@ -47,7 +49,7 @@
           <div>
             <span class="status-pill online">系统在线</span>
             <h2>从视频感知到语义审核，<br><em>形成可追溯的数据闭环。</em></h2>
-            <p>RTMDet/RTMPose 提取双人 COCO-17 骨架，Campus6 GAP ProtoGCN 完成六分类；低置信样本仅在服务器 GPU 空闲时调用 Qwen3-VL。</p>
+            <p>RTMDet/RTMPose 提取双人 COCO-17 骨架，M1FKD INT8 Campus6 完成六分类；低置信样本仅在服务器 GPU 空闲时调用 Qwen3-VL-8B。</p>
           </div>
           <div class="hero-orbit" aria-hidden="true">
             <div class="orbit-ring r1"></div><div class="orbit-ring r2"></div>
@@ -56,7 +58,7 @@
         </div>
         <div class="metric-grid" id="metrics"></div>
         <div class="two-column">
-          <article class="panel"><div class="panel-head"><div><span class="panel-kicker">DATA BALANCE</span><h3>六分类数据分布</h3></div><button class="text-button" data-goto="dataset">查看数据集 →</button></div><div id="label-chart" class="bar-chart"></div></article>
+          <article class="panel"><div class="panel-head"><div><span class="panel-kicker">BEHAVIOR DISTRIBUTION</span><h3>六分类识别分布</h3></div><button class="text-button" data-goto="dataset">查看审计记录 →</button></div><div id="label-chart" class="bar-chart"></div></article>
           <article class="panel"><div class="panel-head"><div><span class="panel-kicker">PIPELINE</span><h3>能力状态</h3></div></div><div id="capability-list" class="capability-list"></div></article>
         </div>
         <article class="panel"><div class="panel-head"><div><span class="panel-kicker">RECENT TASKS</span><h3>最近处理任务</h3></div></div><div id="recent-jobs" class="job-list empty-state">暂无运行任务</div></article>
@@ -65,30 +67,26 @@
       <section class="page" id="page-inference">
         <div class="toolbar panel compact">
           <div class="sample-browser">
-            <label>选择任意服务器样本</label>
-            <button class="sample-tree-toggle" id="sample-tree-toggle" type="button" aria-expanded="false"><span id="sample-tree-current">请选择服务器样本</span><i>⌄</i></button>
+            <label>选择已处理行为片段</label>
+            <button class="sample-tree-toggle" id="sample-tree-toggle" type="button" aria-expanded="false"><span id="sample-tree-current">请选择行为片段</span><i>⌄</i></button>
             <div class="sample-tree-menu hidden" id="sample-tree-menu"><div id="sample-tree-groups" class="sample-tree-groups"></div></div>
           </div>
-          <label class="inference-search"><span>搜索服务器样本</span><input id="inference-search" placeholder="样本 ID、来源或原类别"></label>
+          <label class="inference-search"><span>搜索识别记录</span><input id="inference-search" placeholder="片段 ID、类别或状态"></label>
           <div class="toolbar-spacer"></div>
-          <label class="upload-button">上传到服务器<input id="video-upload" type="file" accept="video/*,.avi" hidden></label>
-          <button class="button secondary" id="run-preview">生成预览</button>
-          <button class="button secondary" id="run-pose">提取骨架</button>
-          <button class="button primary" id="run-full">运行完整推理</button>
+          <span class="status-pill online">后台持续处理</span>
         </div>
         <div id="inference-job" class="job-progress hidden"><div><span></span></div><p></p></div>
         <div class="workbench-layout">
           <div class="inspection-workspace">
             <div class="video-grid workbench-videos">
-              <article class="panel video-panel"><div class="panel-head"><div><span class="panel-kicker">SOURCE VIDEO</span><h3>原始视频</h3></div><span class="artifact-tag" id="source-status">未选择</span></div><div class="video-frame"><video id="source-video" controls loop playsinline></video><div class="video-placeholder">请选择一个视频样本</div></div></article>
-              <article class="panel video-panel"><div class="panel-head"><div><span class="panel-kicker">POSE ONLY</span><h3>RTMPose COCO-17 骨架</h3></div><span class="artifact-tag" id="pose-status">未生成</span></div><div class="video-frame pose"><video id="pose-video" controls loop playsinline></video><div class="video-placeholder">运行骨架提取后显示</div></div></article>
+              <article class="panel video-panel"><div class="panel-head"><div><span class="panel-kicker">SKELETON-ONLY</span><h3>RTMDet/RTMPose COCO-17 骨架</h3></div><span class="artifact-tag" id="pose-status">处理中</span></div><div class="video-frame pose"><video id="pose-video" controls loop playsinline></video><div class="video-placeholder">后台完成骨架处理后显示；浏览器不接收 RGB 视频</div></div></article>
             </div>
 
             <article class="panel evidence-panel">
-              <div class="panel-head"><div><span class="panel-kicker">STUDENT EVIDENCE</span><h3>Campus6 ProtoGCN Top-5</h3></div><span class="model-chip">Campus6 · GAP</span></div>
+              <div class="panel-head"><div><span class="panel-kicker">STUDENT EVIDENCE</span><h3>M1FKD INT8 Campus6 Top-5</h3></div><span class="model-chip">Campus6 · INT8</span></div>
               <div id="prediction-list" class="prediction-list empty-state">尚无预测结果</div>
               <div id="student-evidence" class="evidence-details hidden"></div>
-              <div class="warning-note">当前使用 Campus6 GAP ProtoGCN FP32 基线；提交审核时会固化 Top-5、权重哈希和任务状态。</div>
+              <div class="warning-note">当前使用 M1FKD INT8 部署模型；提交审核时会固化 Top-5、权重哈希和任务状态。FP32 GAP 权重仅用于训练与回归验证。</div>
             </article>
 
             <article class="panel teacher-panel disabled-region">
@@ -97,7 +95,6 @@
                 <div class="teacher-icon">◇</div>
                 <div><strong>Qwen 多模态语义教师</strong><p>启用后展示当前闭集标签建议、置信度、关键证据片段、交互关系和简短判定依据。</p></div>
               </div>
-              <button class="button disabled" id="run-teacher" disabled>运行大模型分析</button>
             </article>
 
           </div>
@@ -113,15 +110,35 @@
           </div>
       </section>
 
+      <section class="page" id="page-reasoning">
+        <div class="page-intro"><div><span class="panel-kicker">SEMANTIC REASONING</span><h2>语义理解与推理依据</h2><p>Qwen3-VL-8B 仅使用 Skeleton 视频、结构化骨架语义与 M1FKD Top-K，对困难样本给出封闭六分类判断。</p></div></div>
+        <div class="two-column">
+          <article class="panel"><div class="panel-head"><h3>协同决策</h3><span id="reasoning-status" class="status-pill disabled">等待识别记录</span></div><div id="reasoning-summary" class="teacher-placeholder">请选择一条识别记录</div></article>
+          <article class="panel"><div class="panel-head"><h3>六类教师分布</h3></div><div id="reasoning-distribution" class="prediction-list empty-state">尚无教师分布</div></article>
+        </div>
+        <article class="panel"><div class="panel-head"><h3>一句话判断依据</h3></div><p id="reasoning-reason" class="muted">尚无语义判断依据</p><pre id="reasoning-trigger">触发条件将在学生推理后生成</pre></article>
+      </section>
+
+      <section class="page" id="page-privacy">
+        <div class="page-intro"><div><span class="panel-kicker">SKELETON-ONLY PRIVACY</span><h2>骨架流与隐私模式</h2><p>原始 RGB 只在边缘侧短暂用于姿态估计；浏览器、教师模型和审计库只接收匿名化 Skeleton 数据。</p></div></div>
+        <div class="pipeline-flow">
+          <div class="flow-step enabled"><span class="num">01 · EDGE ONLY</span><strong>原始视频</strong><small>不进入 Web，不长期保存</small></div>
+          <div class="flow-step enabled"><span class="num">02 · CUDA</span><strong>RTMDet-S + RTMPose-S</strong><small>最多双人 COCO-17</small></div>
+          <div class="flow-step enabled"><span class="num">03 · ANONYMIZED</span><strong>Skeleton Sequence</strong><small>坐标、置信度、有效性 Mask</small></div>
+          <div class="flow-step enabled"><span class="num">04 · MODEL INPUT</span><strong>M1FKD / Qwen</strong><small>只使用骨架与结构化语义</small></div>
+        </div>
+        <div class="two-column"><article class="panel"><h3>隐私边界</h3><p class="muted">无 RGB 上传接口、无原始视频播放接口、无浏览器原始路径、无 Qwen RGB 输入。</p></article><article class="panel"><h3>鲁棒性设计</h3><p class="muted">关键点置信度 Mask、短时遮挡轨迹保持、最多双人跟踪、均匀时序采样与姿态质量门控。</p></article></div>
+      </section>
+
       <section class="page" id="page-dataset">
         <div class="toolbar panel compact">
-          <div class="stat-inline"><strong id="dataset-total">0</strong><span>服务器样本</span></div>
+          <div class="stat-inline"><strong id="dataset-total">0</strong><span>识别审计记录</span></div>
           <select id="dataset-source"><option value="all">全部来源</option></select>
           <select id="dataset-status"><option value="all">全部状态</option><option value="pending">待审核</option><option value="reviewed">已标注</option><option value="unknown">无法判断</option><option value="damaged">损坏</option><option value="out_of_scope">无关</option></select>
-          <input id="dataset-search" class="wide-search" placeholder="搜索 ID、来源标签或路径">
-          <div class="toolbar-spacer"></div><button class="button primary" id="export-dataset">导出审核清单</button>
+          <input id="dataset-search" class="wide-search" placeholder="搜索 ID、类别或状态">
+          <div class="toolbar-spacer"></div><button class="button primary" id="export-dataset">导出审计记录</button>
         </div>
-        <article class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>样本</th><th>来源</th><th>原类别</th><th>候选标签</th><th>人工标签</th><th>状态</th><th>操作</th></tr></thead><tbody id="dataset-table"></tbody></table></div><div class="pagination"><button id="page-prev">←</button><span id="page-info">第 1 页</span><button id="page-next">→</button></div></article>
+        <article class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>片段</th><th>来源</th><th>基线类别</th><th>学生建议</th><th>人工结论</th><th>状态</th><th>处置</th></tr></thead><tbody id="dataset-table"></tbody></table></div><div class="pagination"><button id="page-prev">←</button><span id="page-info">第 1 页</span><button id="page-next">→</button></div></article>
       </section>
 
       <section class="page" id="page-evolution">
@@ -150,7 +167,7 @@
         <div class="page-intro"><div><span class="panel-kicker">SERVER CONFIGURATION</span><h2>服务器配置</h2><p>这些目录全部位于后端服务器，本地浏览器不保存项目数据。</p></div></div>
         <article class="panel settings-panel gpu-settings-panel">
           <div class="panel-head">
-            <div><span class="panel-kicker">DEVICE SCHEDULING</span><h3>推理设备调度</h3><p class="muted">RTMPose 固定使用 CPU；在这里选择 ProtoGCN 可使用的 GPU。Qwen 仅在满足空闲 GPU 准入条件时启动。</p></div>
+            <div><span class="panel-kicker">DEVICE SCHEDULING</span><h3>推理设备调度</h3><p class="muted">RTMDet/RTMPose 和 M1FKD 均使用选定的 GPU 池。调度器优先选择服务内空闲、利用率低且显存占用低的卡；Qwen 仅在满足空闲 GPU 准入条件时启动。</p></div>
             <div class="gpu-actions"><span id="gpu-status" class="status-pill disabled">正在检测</span><button id="refresh-gpus" class="button secondary">刷新状态</button></div>
           </div>
           <div id="gpu-grid" class="gpu-grid"></div>
@@ -160,11 +177,10 @@
           </div>
         </article>
         <article class="panel settings-panel"><div id="system-paths" class="settings-grid"></div></article>
-        <article class="panel"><div class="panel-head"><h3>环境配置提示</h3></div><pre id="environment-help"></pre></article>
       </section>
     </main>
   </div>
   <div id="toast-root"></div>
-  <script src="/app.js?v=20260803-job-dedup1" defer></script>
+  <script src="/app.js?v=20260830-campus6-product1" defer></script>
 </body>
 </html>

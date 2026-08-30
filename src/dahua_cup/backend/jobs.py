@@ -17,14 +17,13 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from dahua_cup.pipeline.common import render_command
-from dahua_cup.pipeline.video_encoding import browser_video_args
 
 from .config import Settings
 from .gpu import GPUManager
 from .store import ReviewStore
 
 
-ACTIONS = frozenset(("preview", "pose", "classify", "teacher", "full"))
+ACTIONS = frozenset(("pose", "classify", "teacher", "full"))
 
 
 def _now() -> str:
@@ -54,7 +53,7 @@ def set_command_option(command: List[str], option: str, value: str) -> List[str]
 
 
 def pose_quality_metrics(path: Path) -> dict:
-    """Measure usable NTU25 joint coverage without penalizing empty slots."""
+    """Measure usable COCO-17 joint coverage without penalizing empty slots."""
     try:
         import numpy as np
     except ImportError as exc:
@@ -304,13 +303,92 @@ class JobManager:
         self.teacher_active = False
         self.submission_lock = threading.Lock()
         self.active_sample_jobs: Dict[str, tuple[str, str]] = {}
+        self._continuous_stop = threading.Event()
+        self._continuous_thread: Optional[threading.Thread] = None
+        self._continuous_status = {
+            "enabled": False,
+            "state": "stopped",
+            "last_sample_id": "",
+            "last_error": "",
+        }
         self.executor = ThreadPoolExecutor(
             max_workers=settings.max_workers, thread_name_prefix="dahua-web"
         )
 
+    def start_continuous_pipeline(self) -> None:
+        """Continuously materialize pose, student, and eligible teacher results.
+
+        This is intentionally server-owned.  The browser only observes and
+        reviews completed results; it never uploads RGB or starts inference.
+        """
+        if os.environ.get("DAHUA_CONTINUOUS_PIPELINE", "1") != "1":
+            return
+        if self._continuous_thread and self._continuous_thread.is_alive():
+            return
+        self._continuous_stop.clear()
+        self._continuous_status.update(enabled=True, state="starting", last_error="")
+        self._continuous_thread = threading.Thread(
+            target=self._continuous_loop,
+            name="dahua-campus6-continuous",
+            daemon=True,
+        )
+        self._continuous_thread.start()
+
+    def stop_continuous_pipeline(self) -> None:
+        self._continuous_stop.set()
+        if self._continuous_thread:
+            self._continuous_thread.join(timeout=2)
+        self._continuous_status["state"] = "stopped"
+
+    def continuous_status(self) -> dict:
+        return dict(self._continuous_status)
+
+    def _continuous_loop(self) -> None:
+        self._continuous_status["state"] = "running"
+        while not self._continuous_stop.is_set():
+            try:
+                batch = self.store.list_samples(status="pending", limit=200)["items"]
+                submitted = False
+                for item in batch:
+                    sample_id = item["sample_id"]
+                    with self.submission_lock:
+                        if sample_id in self.active_sample_jobs:
+                            continue
+                    prediction = self.prediction(sample_id)
+                    teacher = self.teacher_state(sample_id) if prediction else {}
+                    if prediction is None:
+                        # Initial Campus6 records are already standardized
+                        # COCO-17 skeletons.  Do not feed their rendered pose
+                        # video back into RTMPose; only run the student.
+                        action = (
+                            "classify"
+                            if self.artifacts(sample_id)["feature"].is_file()
+                            else "full"
+                        )
+                    elif (
+                        (prediction.get("teacher_gate") or {}).get("triggered")
+                        and teacher.get("status") in {"not_run", "not_enabled"}
+                        and self.capability_state()["qwen_teacher"]["enabled"]
+                    ):
+                        action = "teacher"
+                    else:
+                        continue
+                    latest = self.store.get_sample(sample_id).get("jobs", [])
+                    if latest and latest[0].get("action") == action and latest[0].get("status") == "failed":
+                        continue
+                    self.submit(sample_id, action)
+                    self._continuous_status["last_sample_id"] = sample_id
+                    self._continuous_status["last_error"] = ""
+                    submitted = True
+                    break
+                self._continuous_stop.wait(2 if submitted else 20)
+            except Exception as exc:
+                self._continuous_status["last_error"] = f"{type(exc).__name__}: {exc}"
+                self._continuous_stop.wait(20)
+
     @contextmanager
     def regular_gpu_slot(self):
-        """Allow normal GPU jobs concurrently, but never alongside Qwen32B."""
+        """Allow normal GPU jobs concurrently, but never alongside Qwen8B."""
         with self.gpu_condition:
             while self.teacher_active or self.teacher_waiting:
                 self.gpu_condition.wait()
@@ -350,9 +428,6 @@ class JobManager:
         name = safe_name(sample_id)
         root = self.settings.artifact_root
         return {
-            "preview": root / "previews" / f"{name}.mp4",
-            "localized_video": root / "localized_videos" / f"{name}.mp4",
-            "localization": root / "localization" / f"{name}.json",
             "feature": root / "features" / f"{name}.npz",
             "pose_video": root / "pose_videos" / f"{name}.mp4",
             "prediction": root / "predictions" / f"{name}.json",
@@ -366,10 +441,6 @@ class JobManager:
         teacher_command = self.settings.default_teacher_command()
         teacher_gpus = self.gpus.teacher_availability()
         return {
-            "video_preview": {
-                "enabled": bool(self.settings.ffmpeg),
-                "reason": "" if self.settings.ffmpeg else "服务器未安装 FFmpeg",
-            },
             "pose_extraction": {
                 "enabled": bool(pose_command),
                 "reason": "" if pose_command else "尚未配置 RTMPose Python 环境或 DAHUA_VIS_POSE_COMMAND",
@@ -387,7 +458,7 @@ class JobManager:
                     else (
                         "尚未配置服务器 Qwen 模型或教师 Python 环境"
                         if not teacher_command else
-                        "Qwen3-VL-32B 需要 {} 张空闲 GPU（每张至少 {} MiB、利用率不高于 {}%）；当前可用：{}"
+                        "Qwen3-VL-8B 需要 {} 张空闲 GPU（每张至少 {} MiB、利用率不高于 {}%）；当前可用：{}"
                         .format(
                             teacher_gpus["required_gpu_count"],
                             teacher_gpus["minimum_free_memory_mb"],
@@ -406,11 +477,10 @@ class JobManager:
             raise ValueError(f"unsupported action: {action}")
         capabilities = self.capability_state()
         required = {
-            "preview": ("video_preview",),
-            "pose": ("pose_extraction", "video_preview"),
+            "pose": ("pose_extraction",),
             "classify": ("campus6_inference",),
             "teacher": ("qwen_teacher",),
-            "full": ("video_preview", "pose_extraction", "campus6_inference"),
+            "full": ("pose_extraction", "campus6_inference"),
         }[action]
         unavailable = [capabilities[name]["reason"] for name in required if not capabilities[name]["enabled"]]
         if unavailable:
@@ -441,10 +511,10 @@ class JobManager:
             pose_device = ""
             student_device = ""
             if action in {"pose", "full"}:
-                pose_device = "cpu"
+                pose_device = "cuda:{}".format(self.gpus.acquire_device("pose"))
             if action in {"classify", "full"}:
                 student_device = "cuda:{}".format(
-                    self.gpus.next_device("student")
+                    self.gpus.acquire_device("student")
                 )
             job = self.store.create_job(
                 sample_id,
@@ -457,6 +527,10 @@ class JobManager:
                 self.executor.submit(self._run, job["job_id"])
             except Exception:
                 self.active_sample_jobs.pop(sample_id, None)
+                if pose_device:
+                    self.gpus.release_device("pose", int(pose_device.split(":", 1)[1]))
+                if student_device:
+                    self.gpus.release_device("student", int(student_device.split(":", 1)[1]))
                 self.store.update_job(
                     job["job_id"],
                     status="failed",
@@ -516,14 +590,13 @@ class JobManager:
                 raise FileNotFoundError(f"视频不存在：{video}")
             if not self.settings.video_path_is_allowed(video):
                 raise PermissionError("视频必须位于服务器候选数据或 Web 上传目录内")
-            if action in {"preview", "pose", "full"}:
-                self.store.update_job(job_id, progress=0.08, message="正在生成浏览器预览")
-                self._ensure_preview(video, paths["preview"], logs)
             if action in {"pose", "full"}:
                 self.store.update_job(
                     job_id,
                     progress=0.30,
-                    message="正在 CPU 提取 RTMPose17 骨架",
+                    message="正在 GPU {} 提取 RTMDet/RTMPose COCO-17 骨架".format(
+                        job["pose_device"].split(":", 1)[1]
+                    ),
                 )
                 values = {
                     key: shlex.quote(str(value))
@@ -532,17 +605,21 @@ class JobManager:
                         "video": video,
                         **paths,
                         "repository_root": self.settings.repository_root,
-                        "device": "cpu",
-                        "physical_device": "",
-                        "delegate": "cpu",
+                        "device": "cuda:0",
+                        "physical_device": int(job["pose_device"].split(":", 1)[1]),
+                        "delegate": "cuda",
                     }.items()
                 }
                 pose_command = render_command(
                     self.settings.default_pose_command(), **values
                 )
-                pose_command = set_command_option(pose_command, "--device", "cpu")
+                pose_command = set_command_option(pose_command, "--device", "cuda:0")
                 pose_command = set_command_option(pose_command, "--joint-score-threshold", str(self.settings.joint_score_threshold))
-                logs.append(self._execute(pose_command))
+                pose_gpu_id = int(job["pose_device"].split(":", 1)[1])
+                with self.regular_gpu_slot():
+                    logs.append(self._execute(
+                        pose_command, self.gpus.process_environment(pose_gpu_id)
+                    ))
                 self.store.update_job(job_id, progress=0.62, message="正在渲染 RTMPose17 骨架视频")
                 command = [
                     sys.executable, "-m", "dahua_cup.pipeline.render_rtmpose17_pose",
@@ -829,6 +906,14 @@ class JobManager:
                 log_text="\n".join(logs)[-20000:], finished_at=_now(),
             )
         finally:
+            if job.get("pose_device"):
+                self.gpus.release_device(
+                    "pose", int(job["pose_device"].split(":", 1)[1])
+                )
+            if job.get("student_device"):
+                self.gpus.release_device(
+                    "student", int(job["student_device"].split(":", 1)[1])
+                )
             self._release_active_job(job["sample_id"], job_id)
 
     @staticmethod
@@ -876,35 +961,6 @@ class JobManager:
                     admission["gpu_ids"]
                 ),
             )
-
-    def _ensure_preview(self, source: Path, destination: Path, logs: List[str]) -> None:
-        if source.suffix.lower() == ".mp4":
-            logs.append("source is already MP4; browser preview uses the original file")
-            return
-        ready = destination.with_suffix(destination.suffix + ".ready")
-        if destination.is_file() and destination.stat().st_size > 0 and ready.is_file():
-            return
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_name(destination.stem + ".part" + destination.suffix)
-        temporary.unlink(missing_ok=True)
-        command = [
-            str(self.settings.ffmpeg), "-y", "-loglevel", "error", "-i", str(source),
-            "-map", "0:v:0", "-an",
-        ]
-        command.extend(browser_video_args(
-            self.settings.preview_codec,
-            self.settings.preview_preset,
-            quality=24,
-            bitrate=self.settings.preview_bitrate,
-        ))
-        command.append(str(temporary))
-        try:
-            logs.append(self._execute(command))
-            temporary.replace(destination)
-            ready.write_text("ok\n", encoding="utf-8")
-        except Exception:
-            temporary.unlink(missing_ok=True)
-            raise
 
     def prediction(self, sample_id: str) -> Optional[dict]:
         path = self.artifacts(sample_id)["prediction"]
@@ -974,7 +1030,7 @@ class JobManager:
             status = latest.get("status") or "unknown"
             return {
                 "status": status,
-                "model": "Qwen3-VL-32B-Instruct",
+                "model": "Qwen3-VL-8B-Instruct",
                 "reason": latest.get("message", ""),
                 "result": None,
                 "job_id": latest.get("job_id"),
@@ -1011,7 +1067,7 @@ class JobManager:
             return {
                 "status": status,
                 "model": (
-                    "Qwen3-VL-32B-Instruct"
+                    "Qwen3-VL-8B-Instruct"
                     if capability["enabled"] else None
                 ),
                 "reason": reason,
@@ -1038,7 +1094,7 @@ class JobManager:
 
         return {
             "status": "not_run" if capability["enabled"] else "not_enabled",
-            "model": "Qwen3-VL-32B-Instruct" if capability["enabled"] else None,
+            "model": "Qwen3-VL-8B-Instruct" if capability["enabled"] else None,
             "reason": capability["reason"],
             "result": None,
         }
@@ -1054,7 +1110,5 @@ class JobManager:
             if key == "work_dir":
                 continue
             exists = path.is_file() and path.stat().st_size > 0
-            if key == "preview":
-                exists = exists and path.with_suffix(path.suffix + ".ready").is_file()
             result[key] = exists
         return result

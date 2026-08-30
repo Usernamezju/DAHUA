@@ -49,6 +49,20 @@ function formatTime(value) {
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
 }
 
+function projectPath(value) {
+  if (!value) return "—";
+  const root = String(state.system.repository_root || "").replace(/\/+$/, "");
+  const path = String(value);
+  if (root && (path === root || path.startsWith(`${root}/`))) {
+    return path === root ? "." : `./${path.slice(root.length + 1)}`;
+  }
+  const dataRoot = String(state.system.data_root || "").replace(/\/+$/, "");
+  if (dataRoot && (path === dataRoot || path.startsWith(`${dataRoot}/`))) {
+    return path === dataRoot ? "DAHUA_DATA_ROOT" : `DAHUA_DATA_ROOT/${path.slice(dataRoot.length + 1)}`;
+  }
+  return path;
+}
+
 function titleForStatus(status) {
   return ({pending:"待审核",reviewed:"已标注",unknown:"无法判断",damaged:"损坏",out_of_scope:"无关",queued:"排队中",running:"处理中",completed:"完成",failed:"失败",skipped:"已跳过",blocked_quality:"骨架质量不足"})[status] || status;
 }
@@ -65,7 +79,7 @@ function setSidebarCollapsed(collapsed) {
 
 function setPage(page) {
   if (page === "review") page = "inference";
-  const titles = {dashboard:"运行总览",inference:"推理审核台",dataset:"数据集",evolution:"闭环中心",models:"模型管理",settings:"系统设置"};
+  const titles = {dashboard:"运行总览",inference:"行为识别结果",reasoning:"语义理解与推理依据",privacy:"Skeleton 隐私模式",dataset:"审计记录",evolution:"闭环中心",models:"模型管理",settings:"系统设置"};
   $$(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.page === page));
   $$(".page").forEach(item => item.classList.toggle("active", item.id === `page-${page}`));
   $("#page-title").textContent = titles[page];
@@ -121,7 +135,7 @@ function renderDashboard() {
   const excluded = (d.statuses?.unknown || 0) + (d.statuses?.damaged || 0) + (d.statuses?.out_of_scope || 0);
   const completion = d.total ? Math.round((d.total - pending) / d.total * 100) : 0;
   const metrics = [
-    ["服务器样本", d.total || 0, "已导入审核数据库", "#35d399"],
+    ["行为片段", d.total || 0, "Skeleton-only 识别记录", "#35d399"],
     ["待人工审核", pending, "按优先级进入队列", "#fbbf24"],
     ["有效六分类", reviewed, "可导出用于训练", "#60a5fa"],
     ["审核完成率", `${completion}%`, `已排除 ${excluded} 条`, "#a78bfa"],
@@ -136,16 +150,8 @@ function renderDashboard() {
 }
 
 function renderCapabilities() {
-  const names = {video_preview:"视频预览",pose_extraction:"RTMPose COCO-17 骨架",campus6_inference:"Campus6 GAP ProtoGCN",manual_review:"人工审核",dataset_export:"数据导出",qwen_teacher:"Qwen3-VL 服务器教师",live_camera:"实时摄像头"};
+  const names = {pose_extraction:"RTMPose COCO-17 骨架",campus6_inference:"M1FKD INT8 Campus6 推理",manual_review:"人工审核",dataset_export:"数据导出",qwen_teacher:"Qwen3-VL-8B 服务器教师",live_camera:"实时摄像头"};
   $("#capability-list").innerHTML = Object.entries(state.capabilities).map(([id,item]) => `<div class="capability ${item.enabled ? "enabled":""}" title="${escapeHtml(item.reason)}"><span></span><div><strong>${names[id]||id}</strong><small>${item.enabled ? "已启用" : item.reason}</small></div></div>`).join("");
-  const inferenceBusy = Boolean(state.activeJobId || state.jobSubmissionPending);
-  [["#run-preview",["video_preview"]],["#run-pose",["video_preview","pose_extraction"]],["#run-full",["video_preview","pose_extraction","campus6_inference"]],["#run-teacher",["qwen_teacher"]]].forEach(([selector,ids]) => {
-    const missing=ids.map(id=>state.capabilities[id]).filter(cap=>cap&&!cap.enabled);
-    const cap={enabled:missing.length===0,reason:missing.map(item=>item.reason).join("；")};
-    const button=$(selector); if(!button)return;
-    button.disabled=!cap.enabled || inferenceBusy;
-    button.title=inferenceBusy ? "已有推理任务正在运行" : (cap.reason || "");
-  });
 }
 
 function renderSampleOptions() {
@@ -171,7 +177,7 @@ function renderSampleOptions() {
   const current = $("#sample-tree-current");
   if (current) {
     const sample = state.samples.find(item => item.sample_id === selected);
-    current.textContent = sample ? `${sample.sample_id} · ${sample.source_dataset || "未知来源"}` : "请选择服务器样本";
+    current.textContent = sample ? `${sample.sample_id} · ${sample.source_dataset || "Campus6"}` : "请选择行为片段";
   }
   const datasets = [...new Set(state.samples.map(item=>item.source_dataset).filter(Boolean))];
   ["#dataset-source"].forEach(selector => {
@@ -194,29 +200,50 @@ function setVideo(element, url) {
   if (url) { element.src = `${url}?v=${Date.now()}`; element.load(); }
 }
 
-async function selectInference(sampleId, autoPreview = true) {
+async function selectInference(sampleId) {
   try {
     const sample = await api(`/api/samples/${encodeURIComponent(sampleId)}`);
     state.inferenceSample = sample;
     state.reviewSample = sample;
     setSampleTreeOpen(false);
     renderSampleOptions();
-    setVideo($("#source-video"), sample.artifacts.preview ? sample.media.preview : "");
     setVideo($("#pose-video"), sample.artifacts.pose_video ? sample.media.pose : "");
-    $("#source-status").textContent = sample.artifacts.preview ? "可播放" : "待生成";
     $("#pose-status").textContent = sample.artifacts.pose_video ? "已生成" : "未生成";
     renderPrediction(sample.prediction);
     renderTeacher(sample.teacher, sample.pseudo_record);
+    renderReasoning(sample.teacher, sample.prediction);
     $("#review-note").value = sample.note || "";
     const pendingItems = filteredReviewSamples();
     const queueIndex = pendingItems.findIndex(item => item.sample_id === sample.sample_id);
     if (queueIndex >= 0) state.reviewIndex = queueIndex;
-    if(autoPreview && !sample.artifacts.preview && sample.video_exists && state.capabilities.video_preview?.enabled) await startJob("preview");
   } catch(error){ toast(error.message,true); }
 }
 
+function renderReasoning(teacher, prediction) {
+  const status=$("#reasoning-status"), summary=$("#reasoning-summary"), distribution=$("#reasoning-distribution"), reason=$("#reasoning-reason"), trigger=$("#reasoning-trigger");
+  if(!status||!summary||!distribution||!reason||!trigger)return;
+  const gate=prediction?.teacher_gate||{};
+  const result=teacher?.result;
+  if(result){
+    status.className="status-pill online";status.textContent="教师分析完成";
+    summary.className="teacher-result";
+    summary.innerHTML=`<div><span>最终建议</span><strong>${escapeHtml(LABEL_NAME[result.label]||result.label||"—")}</strong></div><div><span>置信度</span><strong>${result.confidence==null?"—":`${(result.confidence*100).toFixed(1)}%`}</strong></div>`;
+    const values=result.distribution||{};
+    distribution.className="prediction-list";
+    distribution.innerHTML=LABELS.map(([id,name],index)=>`<div class="prediction-row"><span class="rank">${index+1}</span><span>${name}</span><div class="score-track"><span style="width:${Math.max(1,(values[id]||0)*100)}%"></span></div><strong>${((values[id]||0)*100).toFixed(1)}%</strong></div>`).join("");
+    reason.textContent=result.reason||result.reasoning_summary||"教师未返回文字依据";
+  }else{
+    const skipped=teacher?.status==="skipped";
+    status.className="status-pill disabled";status.textContent=skipped?"学生结果已接受":titleForStatus(teacher?.status||"pending");
+    summary.className="teacher-placeholder";summary.textContent=teacher?.reason||"后台尚未产生教师结果";
+    distribution.className="prediction-list empty-state";distribution.textContent="尚无教师分布";
+    reason.textContent=skipped?"学生置信度与类别间隔达到自动接受阈值，无需调用教师。":"尚无语义判断依据";
+  }
+  trigger.textContent=JSON.stringify({route:gate.route||"pending",reasons:gate.reasons||[],student_confidence:gate.student_confidence??null,top1_top2_margin:gate.top1_top2_margin??null,pose_quality:gate.pose_metrics?.quality??null},null,2);
+}
+
 function renderTeacher(teacher, pseudoRecord = null) {
-  const status = $("#teacher-status"), root = $("#teacher-result"), button = $("#run-teacher");
+  const status = $("#teacher-status"), root = $("#teacher-result");
   if (teacher?.status === "completed" && teacher.result) {
     status.className = "status-pill online";
     status.textContent = "分析完成";
@@ -226,9 +253,6 @@ function renderTeacher(teacher, pseudoRecord = null) {
     const evidence = (result.evidence || []).map(item => `<li>${escapeHtml(item.description || item.type || "未提供描述")}${item.segment_id ? ` <code>${escapeHtml(item.segment_id)}</code>` : ""}</li>`).join("");
     const counterEvidence = (result.counter_evidence || []).map(item => `<li>${escapeHtml(item)}</li>`).join("");
     root.innerHTML = `<div><span>建议类别</span><strong>${escapeHtml(LABEL_NAME[label] || label || "—")}</strong></div><div><span>置信度</span><strong>${result.confidence == null ? "—" : `${(result.confidence * 100).toFixed(1)}%`}</strong></div><p>${escapeHtml(result.reason || result.reasoning_summary || "暂无判定依据")}</p>${evidence ? `<section class="teacher-evidence"><strong>教师依据</strong><ul>${evidence}</ul></section>` : ""}${counterEvidence ? `<section class="teacher-evidence counter"><strong>反向依据／限制</strong><ul>${counterEvidence}</ul></section>` : ""}`;
-    button.disabled = !state.capabilities.qwen_teacher?.enabled;
-    button.textContent = "重新运行大模型分析";
-    button.title = state.capabilities.qwen_teacher?.reason || "";
     return;
   }
   if (pseudoRecord?.sample_id) {
@@ -237,8 +261,6 @@ function renderTeacher(teacher, pseudoRecord = null) {
     root.className = "teacher-result";
     const conflicts = (pseudoRecord.conflicts || []).join("、") || "质量分处于人工复核区间";
     root.innerHTML = `<div><span>建议类别</span><strong>${escapeHtml(LABEL_NAME[pseudoRecord.label] || pseudoRecord.label || "—")}</strong></div><div><span>质量分</span><strong>${pseudoRecord.quality_score == null ? "—" : `${(pseudoRecord.quality_score * 100).toFixed(1)}%`}</strong></div><p>${escapeHtml(conflicts)}</p>`;
-    button.disabled = !state.capabilities.qwen_teacher?.enabled;
-    button.textContent = "重新运行大模型分析";
     return;
   }
   const running = ["queued","running"].includes(teacher?.status);
@@ -248,11 +270,6 @@ function renderTeacher(teacher, pseudoRecord = null) {
   status.textContent = running ? titleForStatus(teacher.status) : blockedQuality ? "骨架质量不足" : skipped ? "学生高置信，已跳过" : teacher?.status === "failed" ? "分析失败" : teacher?.status === "not_run" ? "尚未运行" : "尚未启用";
   root.className = "teacher-placeholder";
   root.innerHTML = `<div class="teacher-icon">◇</div><div><strong>${running ? "Qwen 多模态教师正在分析" : blockedQuality ? "骨架质量门控未调用 Qwen" : skipped ? "难例门控未调用 Qwen" : "Qwen 多模态教师"}</strong><p>${escapeHtml(teacher?.reason || "读取骨架视频，并在当前模型对应的标签空间内给出独立判断。")}</p></div>`;
-  const capability = state.capabilities.qwen_teacher;
-  const poseReady = Boolean(state.inferenceSample?.artifacts?.pose_video);
-  button.disabled = running || !capability?.enabled || !poseReady;
-  button.textContent = running ? "大模型分析中" : "运行大模型分析";
-  button.title = capability?.reason || (poseReady ? "" : "请先运行骨架提取");
 }
 
 function renderPrediction(prediction) {
@@ -333,14 +350,14 @@ async function loadDatasetPage() {
   if(status!=="all")params.set("status",status);if(dataset!=="all")params.set("dataset",dataset);if(query)params.set("query",query);
   try{
     const result=await api(`/api/samples?${params}`);state.datasetTotal=result.total;$("#dataset-total").textContent=result.total;
-    $("#dataset-table").innerHTML=result.items.map(item=>`<tr><td><strong>${escapeHtml(item.sample_id)}</strong><span class="sub">${escapeHtml(item.video_path)}</span></td><td>${escapeHtml(item.source_dataset)}</td><td>${escapeHtml(item.source_label||"—")}</td><td>${escapeHtml(item.suggested_coarse_label||"—")}</td><td>${escapeHtml(LABEL_NAME[item.manual_label]||"—")}</td><td><span class="state-badge ${item.status}">${titleForStatus(item.status)}</span></td><td><button class="table-action" data-open-review="${escapeHtml(item.sample_id)}">审核</button></td></tr>`).join("");
+    $("#dataset-table").innerHTML=result.items.map(item=>`<tr><td><strong>${escapeHtml(item.sample_id)}</strong></td><td>${escapeHtml(item.source_dataset)}</td><td>${escapeHtml(LABEL_NAME[item.source_label]||item.source_label||"—")}</td><td>${escapeHtml(LABEL_NAME[item.prediction?.topk?.[0]?.label]||item.prediction?.topk?.[0]?.label||"处理中")}</td><td>${escapeHtml(LABEL_NAME[item.manual_label]||"—")}</td><td><span class="state-badge ${item.status}">${titleForStatus(item.status)}</span></td><td><button class="table-action" data-open-review="${escapeHtml(item.sample_id)}">查看 / 处置</button></td></tr>`).join("");
     const pages=Math.max(1,Math.ceil(result.total/state.datasetPageSize));$("#page-info").textContent=`第 ${state.datasetPage+1} / ${pages} 页`;$("#page-prev").disabled=state.datasetPage===0;$("#page-next").disabled=state.datasetPage+1>=pages;
     $$("[data-open-review]").forEach(button=>button.onclick=async()=>{setPage("inference");await selectInference(button.dataset.openReview);});
   }catch(error){toast(error.message,true);}
 }
 
 function renderPipeline() {
-  const steps=[["视频导入","服务器文件入库",true],["骨架提取","RTMDet/RTMPose COCO-17",state.capabilities.pose_extraction?.enabled],["学生预测","Campus6 GAP ProtoGCN",state.capabilities.campus6_inference?.enabled],["难例筛选","置信度、间隔与姿态质量",true],["大模型教师","按需 Qwen3-VL",state.capabilities.qwen_teacher?.enabled],["人工复核","六分类与审计",true],["批次训练","回放、蒸馏与 QAT",true],["评测发布","通过门槛后人工发布",true]];
+  const steps=[["数据准备","Campus6 最终清单",true],["骨架提取","RTMDet/RTMPose COCO-17",state.capabilities.pose_extraction?.enabled],["学生预测","M1FKD INT8 Campus6",state.capabilities.campus6_inference?.enabled],["难例筛选","置信度、间隔与姿态质量",true],["大模型教师","按需 Qwen3-VL-8B",state.capabilities.qwen_teacher?.enabled],["人工复核","六分类与审计",true],["批次训练","回放、蒸馏与 QAT",true],["评测发布","通过门槛后人工发布",true]];
   $("#pipeline-flow").innerHTML=steps.map(([name,desc,enabled],i)=>`<div class="flow-step ${enabled?"enabled":""}"><span class="num">0${i+1} · ${enabled?"READY":"LOCKED"}</span><strong>${name}</strong><small>${desc}</small></div>`).join("");
 }
 
@@ -390,18 +407,17 @@ async function triggerEvolution() {
 function renderModels() {
   const models=[
     ["RTMDet + RTMPose","双人 COCO-17 骨架","姿态模型",state.capabilities.pose_extraction?.enabled,"DAHUA_RTMPOSE_PYTHON"],
-    ["Campus6 GAP ProtoGCN","42.50 MB FP32 基线","正式推理模型",state.capabilities.campus6_inference?.enabled,state.system.active_student_checkpoint],
-    ["M1FKD INT8","4.56 MB 量化部署工件","边缘部署模型",true,"models/student/M1FKD.deployment.int8.pt"],
-    ["Qwen3-VL-32B","仅在服务器空闲 GPU 足够时按需加载","语义教师",state.capabilities.qwen_teacher?.enabled,state.capabilities.qwen_teacher?.reason||"GPU 准入检查中"],
+    ["M1FKD INT8 Campus6","4.56 MB QAT + logits/feature KD","正式推理模型",state.capabilities.campus6_inference?.enabled,state.system.student_runtime?.checkpoint],
+    ["Campus6 GAP ProtoGCN","42.50 MB FP32","训练与回归基线",true,state.system.student_runtime?.training_baseline],
+    ["Qwen3-VL-8B","仅在服务器空闲 GPU 足够时按需加载","语义教师",state.capabilities.qwen_teacher?.enabled,state.capabilities.qwen_teacher?.reason||"GPU 准入检查中"],
   ];
   $("#model-grid").innerHTML=models.map(([name,desc,type,enabled,config])=>`<article class="panel model-card"><div class="panel-head"><div class="model-icon">◈</div><span class="status-pill ${enabled?"online":"disabled"}">${enabled?"已配置":"未启用"}</span></div><h3>${name}</h3><p>${desc}</p><div class="model-meta"><div><span>用途</span><strong>${type}</strong></div><div><span>配置</span><strong>${config}</strong></div><div><span>状态</span><strong>${enabled?"可运行":"等待接入"}</strong></div></div></article>`).join("");
 }
 
 function renderSettings() {
-  const fields=[["代码根目录",state.system.repository_root],["服务器数据根目录",state.system.data_root],["运行数据目录",state.system.runtime_root],["候选视频目录",state.system.source_root],["浏览器上传目录",state.system.upload_root],["审核清单",state.system.manifest_path],["审核数据库",state.system.database_path],["推理产物目录",state.system.artifact_root],["Qwen GPU 准入",state.capabilities.qwen_teacher?.reason||"已通过"],["当前学生权重",state.system.active_student_checkpoint]];
-  $("#system-paths").innerHTML=fields.map(([name,value])=>`<div class="setting-item"><span>${name}</span><code>${escapeHtml(value||"—")}</code></div>`).join("");
+  const fields=[["代码根目录",state.system.repository_root],["服务器数据根目录",state.system.data_root],["运行数据目录",state.system.runtime_root],["Campus6 数据目录",state.system.source_root],["Campus6 清单",state.system.manifest_path],["审核数据库",state.system.database_path],["推理产物目录",state.system.artifact_root],["Qwen GPU 准入",state.capabilities.qwen_teacher?.reason||"已通过"],["当前 INT8 学生权重",state.system.active_student_checkpoint]];
+  $("#system-paths").innerHTML=fields.map(([name,value])=>`<div class="setting-item"><span>${name}</span><code>${escapeHtml(projectPath(value))}</code></div>`).join("");
   renderGpuSettings();
-  $("#environment-help").textContent=`export DAHUA_CODE_ROOT=/workspace/code/DAHUA_delivery\nexport DAHUA_DATA_ROOT=/workspace/data/xzz_data/DAHUA\nexport DAHUA_RTMPOSE_PYTHON=/root/miniconda3/envs/rtmpose26/bin/python\nexport DAHUA_STUDENT_PYTHON=/root/miniconda3/envs/skel_gcn38/bin/python\nexport DAHUA_QWEN_MODEL_DIR=/workspace/data/public_data/Qwen3-VL-32B-Instruct\nexport DAHUA_QWEN_MIN_GPUS=3\nexport DAHUA_QWEN_MIN_FREE_MEMORY_MB=20000`;
 }
 
 function renderGpuSettings() {
@@ -416,7 +432,7 @@ function renderGpuSettings() {
     $("#gpu-help").textContent="GPU 配置不会静默回退到 CPU；设备不可用时推理任务会明确失败。";
     return;
   }
-  const student=new Set(value.student_gpu_ids||[]);
+  const pose=new Set(value.pose_gpu_ids||[]), student=new Set(value.student_gpu_ids||[]);
   $("#gpu-grid").innerHTML=gpus.map(gpu=>{
     const ratio=gpu.memory_total_mb?Math.min(100,Math.round(gpu.memory_used_mb/gpu.memory_total_mb*100)):0;
     return `<div class="gpu-card">
@@ -424,10 +440,11 @@ function renderGpuSettings() {
       <div class="gpu-live"><span>利用率 ${gpu.utilization_gpu_percent}%</span><span>${gpu.temperature_c}°C</span></div>
       <div class="gpu-memory"><span style="width:${ratio}%"></span></div>
       <small>${gpu.memory_used_mb} / ${gpu.memory_total_mb} MiB</small>
-      <label><input type="checkbox" data-gpu-kind="student" value="${gpu.index}" ${student.has(gpu.index)?"checked":""}> ProtoGCN 分类</label>
+      <label><input type="checkbox" data-gpu-kind="pose" value="${gpu.index}" ${pose.has(gpu.index)?"checked":""}> RTMDet/RTMPose</label>
+      <label><input type="checkbox" data-gpu-kind="student" value="${gpu.index}" ${student.has(gpu.index)?"checked":""}> M1FKD Campus6</label>
     </div>`;
   }).join("");
-  $("#gpu-help").textContent=`RTMPose 固定使用 CPU；ProtoGCN 使用 CUDA GPU 池轮询。Qwen3-VL-32B 仅在满足空闲显存与卡数门槛时独占 GPU，最多同时运行 ${state.system.max_workers||2} 个后台任务。`;
+  $("#gpu-help").textContent=`RTMDet/RTMPose 与 M1FKD Campus6 都使用勾选的 CUDA GPU 池；每个新任务按服务内占用、实时利用率和显存占用自动选择最佳卡。Qwen3-VL-8B 仅在满足空闲显存门槛时独占一张 GPU。`;
 }
 
 async function refreshGpus() {
@@ -438,7 +455,7 @@ async function refreshGpus() {
 async function saveGpuSettings() {
   const selected=kind=>$$(`input[data-gpu-kind="${kind}"]:checked`).map(input=>Number(input.value));
   try{
-    state.gpus=await api("/api/gpus",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({pose_gpu_ids:[],student_gpu_ids:selected("student")})});
+    state.gpus=await api("/api/gpus",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({pose_gpu_ids:selected("pose"),student_gpu_ids:selected("student")})});
     renderGpuSettings();toast("GPU 设置已保存，后续新任务立即生效");
   }catch(error){toast(error.message,true)}
 }
@@ -456,16 +473,13 @@ function bindEvents() {
   if($("#refresh-gpus"))$("#refresh-gpus").onclick=refreshGpus;
   if($("#save-gpu-settings"))$("#save-gpu-settings").onclick=saveGpuSettings;
   if($("#run-evolution"))$("#run-evolution").onclick=triggerEvolution;
-  $("#run-preview").onclick=()=>startJob("preview");$("#run-pose").onclick=()=>startJob("pose");$("#run-full").onclick=()=>startJob("full");$("#run-teacher").onclick=()=>startJob("teacher");
   $("#previous-review").onclick=()=>selectReview(state.reviewIndex-1);$("#next-review").onclick=()=>selectReview(state.reviewIndex+1);
   $("#undo-review").onclick=async()=>{try{const sample=await api("/api/reviews/undo-last",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({actor:reviewer()})});toast(`已撤销 ${sample.sample_id} 的最近审核`);await refreshAll(true);}catch(error){toast(error.message,true)}};
   ["#dataset-source","#dataset-status"].forEach(s=>$(s).onchange=()=>{state.datasetPage=0;loadDatasetPage()});let searchTimer;$("#dataset-search").oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{state.datasetPage=0;loadDatasetPage()},250)};
   $("#page-prev").onclick=()=>{state.datasetPage=Math.max(0,state.datasetPage-1);loadDatasetPage()};$("#page-next").onclick=()=>{state.datasetPage++;loadDatasetPage()};
   $("#export-dataset").onclick=async()=>{try{const value=await api("/api/datasets/export",{method:"POST"});toast(`已导出到服务器：${value.path}`);location.href=value.download_url}catch(error){toast(error.message,true)}};
-  $("#video-upload").onchange=async event=>{const file=event.target.files[0];if(!file)return;try{toast("正在上传到服务器，请勿关闭页面");const sample=await api(`/api/videos?filename=${encodeURIComponent(file.name)}`,{method:"POST",headers:{"Content-Type":"application/octet-stream"},body:file});toast("上传完成");await refreshAll(false);setPage("inference");await selectInference(sample.sample_id)}catch(error){toast(error.message,true)}finally{event.target.value=""}};
   $("#reviewer").value=localStorage.getItem("dahua-reviewer")||"reviewer";$("#reviewer").onchange=()=>localStorage.setItem("dahua-reviewer",$("#reviewer").value.trim());
-  document.addEventListener("keydown",event=>{if(event.key==="Escape")setSampleTreeOpen(false);const page=$("#page-inference");if(!page||!page.classList.contains("active")||["INPUT","TEXTAREA","SELECT"].includes(document.activeElement.tagName))return;if(event.code==="Space"){event.preventDefault();const video=$("#source-video");if(video)video.paused?video.play():video.pause()}else if(/^[1-6]$/.test(event.key))submitReview(LABELS[Number(event.key)-1][0]);else if(event.key==="ArrowLeft")selectReview(state.reviewIndex-1);else if(event.key==="ArrowRight")selectReview(state.reviewIndex+1);});
-  let sync=false;const source=$("#source-video"),pose=$("#pose-video");if(source&&pose){source.addEventListener("play",()=>{if(!sync&&pose.src){sync=true;pose.currentTime=source.currentTime;pose.play().catch(()=>{});sync=false}});source.addEventListener("pause",()=>{if(!sync&&!pose.paused){sync=true;pose.pause();sync=false}});source.addEventListener("seeked",()=>{if(!sync&&pose.src){sync=true;pose.currentTime=source.currentTime;sync=false}})}
+  document.addEventListener("keydown",event=>{if(event.key==="Escape")setSampleTreeOpen(false);const page=$("#page-inference");if(!page||!page.classList.contains("active")||["INPUT","TEXTAREA","SELECT"].includes(document.activeElement.tagName))return;if(/^[1-6]$/.test(event.key))submitReview(LABELS[Number(event.key)-1][0]);else if(event.key==="ArrowLeft")selectReview(state.reviewIndex-1);else if(event.key==="ArrowRight")selectReview(state.reviewIndex+1);});
 }
 
 async function init() {

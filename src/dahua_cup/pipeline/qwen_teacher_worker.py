@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
                     "/workspace/data/xzz_data/DAHUA/models",
                 )
             )
-            / "Qwen3-VL-32B-Instruct"
+            / "Qwen3-VL-8B-Instruct"
         ),
     )
     parser.add_argument("--revision")

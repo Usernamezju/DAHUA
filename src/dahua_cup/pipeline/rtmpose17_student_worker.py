@@ -15,9 +15,9 @@ from dahua_cup.feature_extraction.semantic_graph import summarize_pose_feature
 from dahua_cup.pipeline.common import file_hash, log_event, require_file
 from dahua_cup.paths import CONFIG_ROOT, PROTOGCN_ROOT
 
-DEFAULT_CONFIG = PROTOGCN_ROOT / "configs/campus6/rtmpose26_k400_2d_gap_full.py"
+DEFAULT_CONFIG = PROTOGCN_ROOT / "configs/campus6/rtmpose26_k400_2d_full.py"
 DEFAULT_LABELS = CONFIG_ROOT / "campus/campus6_labels.txt"
-DEFAULT_CHECKPOINT = Path("/workspace/data/xzz_data/DAHUA/experiments/ProtoGCN/campus6_rtmpose26_k400_2d_gap_full_manual_v2/best_top1_acc_epoch_40.pth")
+DEFAULT_CHECKPOINT = Path("/workspace/data/xzz_data/DAHUA/experiments/acceptance/campus6/deployment_benchmark_20260829/M1FKD.deployment.int8.pt")
 MAX_INFERENCE_HISTORY = 20
 
 
@@ -45,6 +45,7 @@ def parser():
     value.add_argument("--sample-id", required=True); value.add_argument("--feature", required=True)
     value.add_argument("--output", required=True); value.add_argument("--config", default=str(DEFAULT_CONFIG))
     value.add_argument("--checkpoint", default=os.environ.get("DAHUA_CAMPUS6_CHECKPOINT", str(DEFAULT_CHECKPOINT)))
+    value.add_argument("--checkpoint-format", choices=("auto", "fp32", "quantized"), default="auto")
     value.add_argument("--label-map", default=str(DEFAULT_LABELS)); value.add_argument("--device", default="cuda:0")
     value.add_argument("--topk", type=int, default=5)
     return value
@@ -73,6 +74,38 @@ def labels(path):
     return values
 
 
+def checkpoint_format(path: Path, requested: str) -> str:
+    if requested != "auto":
+        return requested
+    import torch
+
+    try:
+        payload = torch.load(path, map_location="cpu")
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(f"unable to inspect Campus6 checkpoint: {exc}") from exc
+    return "quantized" if isinstance(payload, dict) and "qparams" in payload else "fp32"
+
+
+def initialize_model(config: Path, checkpoint: Path, device: str, requested_format: str):
+    """Build the correct inference graph and load FP32 or portable INT8 state."""
+    sys.path.insert(0, str(PROTOGCN_ROOT))
+    from protogcn.models.recognizers.recognizergcn_gap import RecognizerGCNGAP  # noqa: F401
+    from protogcn.apis import init_recognizer
+
+    kind = checkpoint_format(checkpoint, requested_format)
+    if kind == "quantized":
+        from dahua_cup.semantic_teacher.distillation.logits_kd import (
+            load_quantized_state_dict,
+        )
+
+        model = init_recognizer(str(config), None, device=device)
+        metadata = load_quantized_state_dict(model, checkpoint)
+        model.eval()
+        return model, kind, metadata
+    from protogcn.apis import init_recognizer
+    return init_recognizer(str(config), str(checkpoint), device=device), kind, {}
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     if not 1 <= args.topk <= 5: raise ValueError("topk must be in [1,5]")
@@ -80,10 +113,10 @@ def main(argv=None):
     checkpoint = require_file(args.checkpoint, "Campus6 checkpoint"); class_names = labels(args.label_map)
     keypoint, score = load_feature(feature)
     sys.path.insert(0, str(PROTOGCN_ROOT))
-    # Ensure the GAP recognizer registers even when an old package __init__ is cached.
-    from protogcn.models.recognizers.recognizergcn_gap import RecognizerGCNGAP  # noqa: F401
-    from protogcn.apis import inference_recognizer, init_recognizer
-    model = init_recognizer(str(config), str(checkpoint), device=args.device)
+    from protogcn.apis import inference_recognizer
+    model, loaded_format, deployment_metadata = initialize_model(
+        config, checkpoint, args.device, args.checkpoint_format
+    )
     video = {"keypoint": keypoint, "keypoint_score": score, "total_frames": keypoint.shape[1],
              "label": -1, "start_index": 0, "modality": "Pose"}
     ranked = inference_recognizer(model, video)
@@ -94,7 +127,8 @@ def main(argv=None):
     output = {"schema_version": "protogcn_prediction.v1", "status": "completed", "sample_id": args.sample_id,
               "task": "campus6_rtmpose17", "label_space_size": 6, "modality": "joint",
               "generated_at": datetime.now(timezone.utc).isoformat(), "feature": str(feature), "config": str(config),
-              "checkpoint": str(checkpoint), "checkpoint_sha256": file_hash(checkpoint), "device": args.device,
+              "checkpoint": str(checkpoint), "checkpoint_sha256": file_hash(checkpoint), "checkpoint_format": loaded_format,
+              "deployment_metadata": deployment_metadata, "device": args.device,
               "physical_gpu_id": os.environ.get("DAHUA_PHYSICAL_GPU_ID", ""), "topk": topk,
               "student_evidence": {"schema_version": "protogcn_measured_evidence.v1", "semantic_graph": semantic},
               "inference_history": previous_inference_history(output_path), "warning": "Campus6 test accuracy is 47/53 (88.68%); conflict_chase test n=2."}

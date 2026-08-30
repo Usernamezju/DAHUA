@@ -91,8 +91,8 @@ class Settings:
         server_data_root = Path("/workspace/data/xzz_data/DAHUA")
         data_root = _path_env("DAHUA_DATA_ROOT", server_data_root if server_data_root.is_dir() else repository_root)
         runtime_root = _path_env("DAHUA_VIS_RUNTIME_ROOT", data_root / "runtime" / "visualization")
-        source_root = _path_env("DAHUA_VIS_SOURCE_ROOT", runtime_root / "videos")
-        manifest_path = _path_env("DAHUA_VIS_MANIFEST", runtime_root / "manual_label_manifest.csv")
+        source_root = _path_env("DAHUA_VIS_SOURCE_ROOT", data_root / "datasets" / "campus6_final")
+        manifest_path = _path_env("DAHUA_VIS_MANIFEST", runtime_root / "campus6_manifest.csv")
         routing_env = os.environ.get("DAHUA_TEACHER_ROUTING_CONFIG", "").strip()
         routing_path = Path(routing_env).expanduser().resolve() if routing_env else CONFIG_ROOT / "campus" / "teacher_routing.yaml"
         routing = _routing_configuration(routing_path, required=bool(routing_env))
@@ -130,17 +130,13 @@ class Settings:
         if outside:
             raise ValueError("runtime paths must stay under DAHUA_DATA_ROOT: " + ", ".join(outside))
         if not (path_is_within(self.manifest_path, self.source_root) or path_is_within(self.manifest_path, self.runtime_root)):
-            raise ValueError("DAHUA_VIS_MANIFEST must stay under the source or runtime root")
-        for path in (self.runtime_root, self.upload_root, self.database_path.parent,
-                     self.artifact_root / "previews", self.artifact_root / "features",
+            raise ValueError("DAHUA_VIS_MANIFEST must stay under the Campus6 source or runtime root")
+        for path in (self.runtime_root, self.database_path.parent,
+                     self.artifact_root / "features",
                      self.artifact_root / "pose_videos", self.artifact_root / "predictions",
                      self.artifact_root / "teachers", self.artifact_root / "work",
                      self.runtime_root / "exports", self.runtime_root / "settings"):
             path.mkdir(parents=True, exist_ok=True)
-
-    @property
-    def upload_root(self) -> Path:
-        return self.runtime_root / "videos"
 
     @property
     def gpu_settings_path(self) -> Path:
@@ -151,7 +147,12 @@ class Settings:
         return True
 
     def video_path_is_allowed(self, path: Path) -> bool:
-        return path_is_within(path, self.source_root) or path_is_within(path, self.upload_root)
+        # Registered baseline samples point at derived skeleton videos in the
+        # private runtime artifact store, never at source RGB media.
+        return (
+            path_is_within(path, self.source_root)
+            or path_is_within(path, self.artifact_root / "pose_videos")
+        )
 
     @property
     def preview_codec(self) -> str:
@@ -179,8 +180,35 @@ class Settings:
         return ""
 
     def resolve_student_checkpoint(self) -> Optional[Path]:
-        configured = os.environ.get("DAHUA_CAMPUS6_CHECKPOINT", "").strip()
-        candidate = Path(configured).expanduser() if configured else self.repository_root / "models" / "student" / "campus6_protogcn_gap_fp32_epoch40.pth"
+        """Return the M1FKD INT8 deployment artifact used for Web inference."""
+        configured = os.environ.get("DAHUA_CAMPUS6_DEPLOYMENT_CHECKPOINT", "").strip()
+        server_default = Path(
+            "/workspace/data/xzz_data/DAHUA/experiments/acceptance/campus6/"
+            "deployment_benchmark_20260829/M1FKD.deployment.int8.pt"
+        )
+        candidate = (
+            Path(configured).expanduser()
+            if configured
+            else server_default if server_default.is_file()
+            else self.repository_root / "models" / "student" / "M1FKD.deployment.int8.pt"
+        )
+        candidate = candidate.resolve()
+        return candidate if candidate.is_file() else None
+
+    def training_baseline_checkpoint(self) -> Optional[Path]:
+        """Return the GAP FP32 checkpoint retained for training/regression."""
+        configured = os.environ.get("DAHUA_CAMPUS6_TRAINING_CHECKPOINT", "").strip()
+        server_default = Path(
+            "/workspace/data/xzz_data/DAHUA/experiments/ProtoGCN/"
+            "campus6_rtmpose26_k400_2d_gap_full_manual_v2/"
+            "best_top1_acc_epoch_40.pth"
+        )
+        candidate = (
+            Path(configured).expanduser()
+            if configured
+            else server_default if server_default.is_file()
+            else self.repository_root / "models" / "student" / "campus6_protogcn_gap_fp32_epoch40.pth"
+        )
         candidate = candidate.resolve()
         return candidate if candidate.is_file() else None
 
@@ -191,11 +219,11 @@ class Settings:
         python_bin = os.environ.get("DAHUA_STUDENT_PYTHON", "").strip()
         if not checkpoint or not python_bin or not Path(python_bin).is_file():
             return ""
-        config = os.environ.get("DAHUA_CAMPUS6_CONFIG", str(self.repository_root / "third_party/ProtoGCN/configs/campus6/rtmpose26_k400_2d_gap_full.py"))
+        config = os.environ.get("DAHUA_CAMPUS6_DEPLOY_CONFIG", str(self.repository_root / "third_party/ProtoGCN/configs/campus6/rtmpose26_k400_2d_full.py"))
         labels = CONFIG_ROOT / "campus" / "campus6_labels.txt"
         return (f"{shlex.quote(python_bin)} -m dahua_cup.pipeline.rtmpose17_student_worker "
                 "--sample-id {sample_id} --feature {feature} --output {prediction} "
-                f"--config {shlex.quote(config)} --checkpoint {shlex.quote(str(checkpoint))} "
+                f"--config {shlex.quote(config)} --checkpoint {shlex.quote(str(checkpoint))} --checkpoint-format quantized "
                 f"--label-map {shlex.quote(str(labels))} --device {{device}}")
 
     def default_teacher_command(self) -> str:
@@ -203,11 +231,11 @@ class Settings:
 
         An explicit command still wins, which permits a remote inference
         service.  Otherwise a deployment running on the competition server
-        discovers the shared Qwen3-VL-32B snapshot and invokes it lazily.
+        discovers the shared Qwen3-VL-8B snapshot and invokes it lazily.
         """
         if self.teacher_command:
             return self.teacher_command
-        default_model = Path("/workspace/data/public_data/Qwen3-VL-32B-Instruct")
+        default_model = Path("/workspace/data/public_data/Qwen3-VL-8B-Instruct")
         model_dir = Path(
             os.environ.get("DAHUA_QWEN_MODEL_DIR", str(default_model))
         ).expanduser()

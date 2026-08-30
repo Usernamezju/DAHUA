@@ -43,17 +43,18 @@ def parse_nvidia_smi(output: str) -> List[dict]:
 
 
 class GPUManager:
-    """Persist the selectable ProtoGCN GPU pool; MediaPipe runs on CPU."""
+    """Select the least-loaded permitted GPU for pose and Campus6 jobs."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
         self._lock = threading.Lock()
-        self._cursor: Dict[str, int] = {"pose": 0, "student": 0}
+        self._leases: Dict[str, Dict[int, int]] = {"pose": {}, "student": {}}
         self._selection = self._load()
 
     @staticmethod
     def _env_defaults() -> dict:
         shared = os.environ.get("DAHUA_INFERENCE_GPUS", "0")
+        pose = os.environ.get("DAHUA_RTMPOSE_GPUS", shared)
         student = os.environ.get("DAHUA_PROTOGCN_GPUS", shared)
 
         def parse(value: str) -> List[int]:
@@ -61,7 +62,7 @@ class GPUManager:
             return _unique_gpu_ids(parts or [0])
 
         return {
-            "pose_gpu_ids": [],
+            "pose_gpu_ids": parse(pose),
             "student_gpu_ids": parse(student),
         }
 
@@ -71,11 +72,17 @@ class GPUManager:
             return defaults
         try:
             value = json.loads(self.path.read_text(encoding="utf-8"))
+            pose = _unique_gpu_ids(
+                value.get("pose_gpu_ids", defaults["pose_gpu_ids"])
+            )
+            student = _unique_gpu_ids(
+                value.get("student_gpu_ids", defaults["student_gpu_ids"])
+            )
             return {
-                "pose_gpu_ids": [],
-                "student_gpu_ids": _unique_gpu_ids(
-                    value.get("student_gpu_ids", defaults["student_gpu_ids"])
-                ),
+                # Upgrade the old CPU-pose settings file without requiring an
+                # operator to open the settings page first.
+                "pose_gpu_ids": pose or defaults["pose_gpu_ids"],
+                "student_gpu_ids": student or defaults["student_gpu_ids"],
             }
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return defaults
@@ -105,24 +112,26 @@ class GPUManager:
         return {
             "available": bool(gpus),
             "gpus": gpus,
-            "pose_gpu_ids": [],
+            "pose_gpu_ids": list(self._selection["pose_gpu_ids"]),
             "student_gpu_ids": list(self._selection["student_gpu_ids"]),
-            "unavailable_pose_gpu_ids": [],
+            "unavailable_pose_gpu_ids": sorted(
+                set(self._selection["pose_gpu_ids"]) - available_ids
+            ),
             "unavailable_student_gpu_ids": sorted(
                 set(self._selection["student_gpu_ids"]) - available_ids
             ),
-            "strategy": "round_robin",
-            "pose_runtime": "RTMPose on CPU",
+            "strategy": "least_loaded_then_lowest_utilization",
+            "pose_runtime": "RTMDet/RTMPose on CUDA",
         }
 
     def teacher_availability(self) -> dict:
         """Return GPUs that are genuinely idle enough for the server Qwen model.
 
-        Qwen3-VL-32B is loaded from the server's shared model volume in fp16,
-        so it needs multiple almost-empty 24 GiB cards.  This is deliberately
-        a conservative admission check: it avoids evicting other users' jobs.
+        Qwen3-VL-8B is loaded from the server's shared model volume in fp16.
+        It needs one almost-empty 24 GiB card.  The admission check remains
+        conservative so an on-demand teacher never evicts another user's job.
         """
-        required = max(1, int(os.environ.get("DAHUA_QWEN_MIN_GPUS", "3")))
+        required = max(1, int(os.environ.get("DAHUA_QWEN_MIN_GPUS", "1")))
         minimum_free = max(
             1, int(os.environ.get("DAHUA_QWEN_MIN_FREE_MEMORY_MB", "20000"))
         )
@@ -156,10 +165,10 @@ class GPUManager:
         }
 
     def update(self, pose_gpu_ids, student_gpu_ids) -> dict:
-        pose = []
+        pose = _unique_gpu_ids(pose_gpu_ids)
         student = _unique_gpu_ids(student_gpu_ids)
-        if not student:
-            raise ValueError("ProtoGCN 至少需要选择一张 GPU")
+        if not pose or not student:
+            raise ValueError("RTMPose 和 ProtoGCN 都至少需要选择一张 GPU")
         available = {gpu["index"] for gpu in self.discover()}
         if available:
             invalid = (set(pose) | set(student)) - available
@@ -177,20 +186,53 @@ class GPUManager:
         temporary.replace(self.path)
         with self._lock:
             self._selection = selection
-            self._cursor = {"pose": 0, "student": 0}
+            self._leases = {"pose": {}, "student": {}}
         return self.state()
 
-    def next_device(self, kind: str) -> int:
-        if kind not in self._cursor:
+    def acquire_device(self, kind: str) -> int:
+        """Lease the currently best GPU in the selected pool.
+
+        Ranking first avoids cards already leased by this service, then uses
+        live nvidia-smi utilization and used-memory ratio.  It deliberately
+        never guesses a CPU fallback: unavailable CUDA capacity is a visible
+        job submission error.
+        """
+        if kind not in self._leases:
             raise ValueError("unknown GPU workload: {}".format(kind))
         key = "{}_gpu_ids".format(kind)
         with self._lock:
             pool = self._selection[key]
             if not pool:
                 raise RuntimeError("{} GPU 池为空".format(kind))
-            index = self._cursor[kind] % len(pool)
-            self._cursor[kind] += 1
-            return pool[index]
+            snapshots = {gpu["index"]: gpu for gpu in self.discover()}
+            available = [gpu_id for gpu_id in pool if gpu_id in snapshots]
+            if not available:
+                raise RuntimeError("{} GPU 池中的设备当前均不可见".format(kind))
+
+            def rank(gpu_id: int):
+                gpu = snapshots[gpu_id]
+                total = max(gpu["memory_total_mb"], 1)
+                return (
+                    self._leases[kind].get(gpu_id, 0),
+                    gpu["utilization_gpu_percent"],
+                    gpu["memory_used_mb"] / total,
+                    gpu["memory_used_mb"],
+                    gpu_id,
+                )
+
+            selected = min(available, key=rank)
+            self._leases[kind][selected] = self._leases[kind].get(selected, 0) + 1
+            return selected
+
+    def release_device(self, kind: str, gpu_id: int) -> None:
+        if kind not in self._leases:
+            return
+        with self._lock:
+            active = self._leases[kind].get(gpu_id, 0)
+            if active <= 1:
+                self._leases[kind].pop(gpu_id, None)
+            else:
+                self._leases[kind][gpu_id] = active - 1
 
     @staticmethod
     def process_environment(gpu_id: int) -> dict:
