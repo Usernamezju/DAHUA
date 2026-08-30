@@ -3,6 +3,7 @@ set -euo pipefail
 
 code_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export DAHUA_CODE_ROOT="${DAHUA_CODE_ROOT:-${code_root}}"
+export PYTHONPATH="${DAHUA_CODE_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 export DAHUA_DATA_ROOT="${DAHUA_DATA_ROOT:-${DAHUA_CODE_ROOT}/runtime-data}"
 export DAHUA_VIS_RUNTIME_ROOT="${DAHUA_VIS_RUNTIME_ROOT:-${DAHUA_DATA_ROOT}/runtime/visualization}"
 export DAHUA_CAMPUS6_CONFIG="${DAHUA_CAMPUS6_CONFIG:-${DAHUA_CODE_ROOT}/third_party/ProtoGCN/configs/campus6/rtmpose26_k400_2d_gap_full.py}"
