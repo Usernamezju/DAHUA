@@ -180,17 +180,17 @@ class Settings:
         return ""
 
     def resolve_student_checkpoint(self) -> Optional[Path]:
-        """Return the M1FKD INT8 deployment artifact used for Web inference."""
+        """Return the accepted M1KD QAT INT8 + Logits KD student."""
         configured = os.environ.get("DAHUA_CAMPUS6_DEPLOYMENT_CHECKPOINT", "").strip()
         server_default = Path(
             "/workspace/data/xzz_data/DAHUA/experiments/acceptance/campus6/"
-            "deployment_benchmark_20260829/M1FKD.deployment.int8.pt"
+            "m1kd_best_full/M1KD.runtime.int8.pt"
         )
         candidate = (
             Path(configured).expanduser()
             if configured
             else server_default if server_default.is_file()
-            else self.repository_root / "models" / "student" / "M1FKD.deployment.int8.pt"
+            else self.repository_root / "models" / "student" / "M1KD.int8.pt"
         )
         candidate = candidate.resolve()
         return candidate if candidate.is_file() else None
@@ -219,7 +219,7 @@ class Settings:
         ).strip()
         server_default = Path(
             "/workspace/data/xzz_data/DAHUA/experiments/acceptance/campus6/"
-            "m1fkd_int8_full/annotations_with_all.pkl"
+            "m1kd_best_full/annotations_with_all.pkl"
         )
         candidate = (
             Path(configured).expanduser()
@@ -234,7 +234,7 @@ class Settings:
         ).strip()
         server_default = Path(
             "/workspace/data/xzz_data/DAHUA/experiments/acceptance/campus6/"
-            "m1fkd_int8_full/M1FKD.eval_all.pkl"
+            "m1kd_best_full/M1KD.eval_all.pkl"
         )
         candidate = (
             Path(configured).expanduser()
@@ -249,7 +249,7 @@ class Settings:
         python_bin = os.environ.get("DAHUA_STUDENT_PYTHON", "").strip()
         if not checkpoint or not python_bin or not Path(python_bin).is_file():
             return ""
-        config = os.environ.get("DAHUA_CAMPUS6_DEPLOY_CONFIG", str(self.repository_root / "third_party/ProtoGCN/configs/campus6/rtmpose26_k400_2d_full.py"))
+        config = os.environ.get("DAHUA_CAMPUS6_DEPLOY_CONFIG", str(self.repository_root / "third_party/ProtoGCN/configs/campus6/rtmpose26_k400_2d_gap_full.py"))
         labels = CONFIG_ROOT / "campus" / "campus6_labels.txt"
         return (f"{shlex.quote(python_bin)} -m dahua_cup.pipeline.rtmpose17_student_worker "
                 "--sample-id {sample_id} --feature {feature} --output {prediction} "

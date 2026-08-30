@@ -1,12 +1,23 @@
 {
   "schema_version": "dahua_model_manifest.v1",
   "edge_default": {
-    "path": "models/student/M1FKD.deployment.int8.pt",
-    "sha256": "5ab0cfc4bd4d91eac2502a46c213b6bf31a015d54d1de5a2b144265690b2173b",
-    "bytes": 4561579,
-    "format": "campus6_deployment.v1",
-    "training_recipe": "M1FKD: INT8 QAT + logits KD + three-stage feature KD",
-    "runtime_note": "The current PyTorch loader dequantizes this portable artifact and executes FP32 CUDA operators."
+    "path": "models/student/M1KD.int8.pt",
+    "sha256": "570f775e98c1643fd25c4b96e8478f2aa0c986e6beb929e355a28eb7d779c33d",
+    "bytes": 5666709,
+    "size_mib": 5.4041948318481445,
+    "format": "portable_qat_int8_state.runtime_safe",
+    "training_recipe": "M1KD: QAT INT8 + logits KD",
+    "acceptance": {
+      "validation": {"correct": 47, "total": 53, "accuracy": 0.8867924528301887},
+      "test": {"correct": 46, "total": 53, "accuracy": 0.8679245283018868},
+      "all": {"correct": 345, "total": 358, "accuracy": 0.9636871508379888}
+    },
+    "serialized_runtime_regression": {
+      "validation": {"correct": 47, "total": 53, "accuracy": 0.8867924528301887},
+      "test": {"correct": 45, "total": 53, "accuracy": 0.8490566037735849},
+      "all": {"correct": 344, "total": 358, "accuracy": 0.9608938547486033}
+    },
+    "runtime_note": "Conv/Linear QAT weights remain INT8; non-QAT graph parameters and buffers retain safe precision. Native INT8 kernels are not claimed."
   },
   "training_and_regression": [
     {
@@ -26,6 +37,14 @@
       "sha256": "2ad558a297a8dd72d30e8792be2dc3a30d7dd8c85d4ae8dfd56940275a434f37",
       "bytes": 34688298,
       "role": "Kinetics-400 backbone-only initialization for Campus6 fine-tuning"
+    }
+  ],
+  "semantic_assets": [
+    {
+      "path": "models/semantic/campus6_gap_clip_v3.npy",
+      "sha256": "666718589f75791a50aadec6fdd2339ca73f546694181af0c4d5ddb1a6d930d2",
+      "bytes": 61568,
+      "role": "Frozen six-class, five-part GAP text embeddings"
     }
   ],
   "pose_assets": [

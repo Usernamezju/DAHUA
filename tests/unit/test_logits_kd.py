@@ -82,3 +82,23 @@ def test_int4_artifact_is_packed_and_loadable(tmp_path):
     output = destination(torch.randn(2, 8))
     assert output.shape == (2, 3)
     assert torch.isfinite(output).all()
+
+
+def test_export_quantizes_only_qat_covered_weights(tmp_path):
+    class GraphModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.graph_adjacency = torch.nn.Parameter(torch.randn(3, 3))
+            self.conv = torch.nn.Conv2d(2, 4, 1, bias=True)
+            self.norm = torch.nn.BatchNorm2d(4)
+
+    source = GraphModel()
+    payload = export_quantized_state_dict(
+        source, tmp_path / "model.int8.pt", {"model": "unit"}, num_bits=8
+    )
+
+    assert set(payload["qparams"]) == {"conv.weight"}
+    assert payload["state_dict"]["conv.weight"].dtype == torch.int8
+    assert payload["state_dict"]["graph_adjacency"].dtype == torch.float32
+    assert payload["state_dict"]["conv.bias"].dtype == torch.float32
+    assert payload["state_dict"]["norm.running_var"].dtype == torch.float32

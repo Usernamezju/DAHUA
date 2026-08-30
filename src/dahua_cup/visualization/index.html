@@ -48,7 +48,7 @@
           <div>
             <span class="status-pill online">系统在线</span>
             <h2>从视频感知到语义审核，<br><em>形成可追溯的数据闭环。</em></h2>
-            <p>RTMDet/RTMPose 提取双人 COCO-17 骨架，M1FKD INT8 Campus6 完成六分类；低置信样本仅在服务器 GPU 空闲时调用 Qwen3-VL-8B。</p>
+            <p>RTMDet/RTMPose 提取双人 COCO-17 骨架，M1KD QAT INT8 + Logits KD 完成六分类；低置信样本仅在服务器 GPU 空闲时调用 Qwen3-VL-8B。</p>
           </div>
           <div class="hero-orbit" aria-hidden="true">
             <div class="orbit-ring r1"></div><div class="orbit-ring r2"></div>
@@ -80,7 +80,7 @@
             <div class="recognition-primary-grid">
               <article class="panel video-panel"><div class="panel-head"><div><span class="panel-kicker">SKELETON-ONLY</span><h3>RTMDet/RTMPose COCO-17 骨架</h3></div><span class="artifact-tag" id="pose-status">处理中</span></div><div class="video-frame pose"><video id="pose-video" controls loop playsinline></video><div class="video-placeholder">后台完成骨架处理后显示；浏览器不接收 RGB 视频</div></div></article>
               <article class="panel evidence-panel compact-student-panel">
-                <div class="panel-head"><div><span class="panel-kicker">STUDENT EVIDENCE</span><h3>M1FKD INT8 Campus6 六类概率</h3></div><span class="model-chip">Campus6 · INT8</span></div>
+                <div class="panel-head"><div><span class="panel-kicker">STUDENT EVIDENCE</span><h3>M1KD INT8 Campus6 六类概率</h3></div><span class="model-chip">Campus6 · INT8</span></div>
                 <div id="prediction-list" class="prediction-list empty-state">尚无预测结果</div>
                 <div class="warning-note">六类置信度已做验证集温度校准；Top-1 类别保持不变。</div>
               </article>
@@ -118,7 +118,7 @@
         <div class="inspection-workspace">
           <div class="video-grid workbench-videos"><article class="panel video-panel"><div class="panel-head"><div><span class="panel-kicker">HARD SAMPLE · SKELETON ONLY</span><h3>难例骨架序列</h3></div><span id="hard-pose-status" class="artifact-tag">等待选择</span></div><div class="video-frame pose"><video id="hard-pose-video" controls loop playsinline></video><div class="video-placeholder">仅展示现有 COCO-17 骨架</div></div></article></div>
           <div class="two-column">
-            <article class="panel evidence-panel"><div class="panel-head"><div><span class="panel-kicker">STUDENT UNCERTAINTY</span><h3>M1FKD INT8 六类概率</h3></div><span id="hard-score" class="status-pill disabled">—</span></div><div id="hard-prediction-list" class="prediction-list empty-state">请选择难例</div></article>
+            <article class="panel evidence-panel"><div class="panel-head"><div><span class="panel-kicker">STUDENT UNCERTAINTY</span><h3>M1KD INT8 六类概率</h3></div><span id="hard-score" class="status-pill disabled">—</span></div><div id="hard-prediction-list" class="prediction-list empty-state">请选择难例</div></article>
             <article class="panel evidence-panel"><div class="panel-head"><div><span class="panel-kicker">STRUCTURED HARD EVIDENCE</span><h3>难例判定证据</h3></div></div><div id="hard-evidence" class="evidence-details">请选择难例</div></article>
           </div>
           <article class="panel teacher-panel"><div class="panel-head"><div><span class="panel-kicker">QWEN3-VL-8B TEACHER</span><h3>难例语义分析</h3></div><span id="hard-teacher-status" class="status-pill disabled">等待分析</span></div><div id="hard-teacher-result" class="teacher-placeholder">请选择难例</div><div id="hard-teacher-distribution" class="prediction-list empty-state">尚无教师六类分布</div></article>

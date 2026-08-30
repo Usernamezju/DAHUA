@@ -133,7 +133,7 @@ class GPUManager:
             if pose_leases.get(gpu_id, 0):
                 roles.append("RTMDet/RTMPose")
             if student_leases.get(gpu_id, 0):
-                roles.append("M1FKD")
+                roles.append("M1KD")
             if gpu_id in teacher_active:
                 roles.append("Qwen3-VL-8B")
             gpu["service_roles"] = roles

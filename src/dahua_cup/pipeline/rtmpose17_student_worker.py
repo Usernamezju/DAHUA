@@ -15,9 +15,9 @@ from dahua_cup.feature_extraction.semantic_graph import summarize_pose_feature
 from dahua_cup.pipeline.common import file_hash, log_event, require_file
 from dahua_cup.paths import CONFIG_ROOT, PROTOGCN_ROOT
 
-DEFAULT_CONFIG = PROTOGCN_ROOT / "configs/campus6/rtmpose26_k400_2d_full.py"
+DEFAULT_CONFIG = PROTOGCN_ROOT / "configs/campus6/rtmpose26_k400_2d_gap_full.py"
 DEFAULT_LABELS = CONFIG_ROOT / "campus/campus6_labels.txt"
-DEFAULT_CHECKPOINT = Path("/workspace/data/xzz_data/DAHUA/experiments/acceptance/campus6/deployment_benchmark_20260829/M1FKD.deployment.int8.pt")
+DEFAULT_CHECKPOINT = Path("/workspace/data/xzz_data/DAHUA/experiments/acceptance/campus6/m1kd_best_full/M1KD.runtime.int8.pt")
 MAX_INFERENCE_HISTORY = 20
 
 
@@ -131,7 +131,13 @@ def main(argv=None):
               "deployment_metadata": deployment_metadata, "device": args.device,
               "physical_gpu_id": os.environ.get("DAHUA_PHYSICAL_GPU_ID", ""), "topk": topk,
               "student_evidence": {"schema_version": "protogcn_measured_evidence.v1", "semantic_graph": semantic},
-              "inference_history": previous_inference_history(output_path), "warning": "Campus6 test accuracy is 47/53 (88.68%); conflict_chase test n=2."}
+              "inference_history": previous_inference_history(output_path),
+              "acceptance_metrics": {
+                  "validation_accuracy": 47 / 53,
+                  "test_accuracy": 46 / 53,
+                  "all_accuracy": 345 / 358,
+              },
+              "warning": "Campus6 test split is small (n=53); conflict_chase test n=2."}
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_suffix(output_path.suffix + ".tmp")
     temporary.write_text(json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"); temporary.replace(output_path)

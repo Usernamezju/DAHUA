@@ -142,7 +142,7 @@ function renderDashboard() {
 }
 
 function renderCapabilities() {
-  const names = {pose_extraction:"RTMPose COCO-17 骨架",campus6_inference:"M1FKD INT8 Campus6 推理",manual_review:"人工审核",dataset_export:"数据导出",qwen_teacher:"Qwen3-VL-8B 服务器教师",live_camera:"实时摄像头"};
+  const names = {pose_extraction:"RTMPose COCO-17 骨架",campus6_inference:"M1KD INT8 Campus6 推理",manual_review:"人工审核",dataset_export:"数据导出",qwen_teacher:"Qwen3-VL-8B 服务器教师",live_camera:"实时摄像头"};
   $("#capability-list").innerHTML = Object.entries(state.capabilities).map(([id,item]) => `<div class="capability ${item.enabled ? "enabled":""}" title="${escapeHtml(item.reason)}"><span></span><div><strong>${names[id]||id}</strong><small>${item.enabled ? "已启用" : item.reason}</small></div></div>`).join("");
 }
 
@@ -389,7 +389,7 @@ async function loadDatasetPage() {
 function renderModels() {
   const models=[
     ["骨架提取模型","RTMDet-S + RTMPose-S","双人 COCO-17 骨架提取与匿名化跟踪",state.capabilities.pose_extraction?.enabled],
-    ["GCN 模型","M1FKD INT8 Campus6","4.56 MB 量化蒸馏六分类模型",state.capabilities.campus6_inference?.enabled],
+    ["GCN 模型","M1KD QAT INT8 + Logits KD","5.31 MB 量化蒸馏六分类模型",state.capabilities.campus6_inference?.enabled],
     ["多模态大模型","Qwen3-VL-8B","基于骨架视频与结构化语义分析难例",state.capabilities.qwen_teacher?.enabled],
   ];
   $("#model-grid").innerHTML=models.map(([type,name,desc,enabled])=>`<article class="panel model-card compact"><div class="panel-head"><div class="model-icon">◈</div><span class="status-pill ${enabled?"online":"disabled"}">${enabled?"可运行":"不可用"}</span></div><label>${type}</label><select class="model-select" aria-label="${type}"><option selected>${name}</option></select><p>${desc}</p></article>`).join("");
@@ -397,7 +397,7 @@ function renderModels() {
   const perClass=metrics.per_class||{};
   const classRows=LABELS.map(([id,name])=>`<div><span>${name}</span><strong>${perClass[id]?.accuracy==null?"—":`${(perClass[id].accuracy*100).toFixed(1)}%`}</strong></div>`).join("");
   const stages=["candidate","validated","production"].map(stage=>`<span class="release-stage ${stage==="production"?"active":""}">${({candidate:"Candidate",validated:"Validated",production:"Production"})[stage]}</span>`).join('<i>→</i>');
-  $("#model-release").innerHTML=`<article class="panel production-card"><div class="panel-head"><div><span class="panel-kicker">CURRENT MODEL</span><h3>${escapeHtml(production.name||"M1FKD INT8 Campus6")}</h3></div><span class="status-pill online">Production</span></div><div class="release-facts"><div><span>生成时间</span><strong>${formatTime(production.generated_at)}</strong></div><div><span>发布时间</span><strong>${formatTime(production.deployed_at)}</strong></div><div><span>模型大小</span><strong>${production.size_mb==null?"—":`${production.size_mb.toFixed(2)} MB`}</strong></div><div><span>六分类总体准确率</span><strong>${metrics.overall_accuracy==null?"—":`${(metrics.overall_accuracy*100).toFixed(1)}%`}</strong></div><div><span>平均类别准确率</span><strong>${metrics.mean_class_accuracy==null?"—":`${(metrics.mean_class_accuracy*100).toFixed(1)}%`}</strong></div></div><div class="per-class-metrics">${classRows}</div></article><article class="panel release-card"><div class="panel-head"><h3>模型评估与发布</h3><span class="status-pill ${candidate?"online":"disabled"}">${candidate?escapeHtml(candidate.status):"无候选模型"}</span></div><div class="release-flow">${stages}</div><p>${candidate?`最近候选模型 ${escapeHtml(candidate.model_id||"—")} 当前状态：${escapeHtml(candidate.status||"candidate")}。`:"当前没有待评估 Candidate；新模型通过总体、平均类别与逐类指标门槛后方可进入 Production。"}</p><div class="rollback-state"><span>回滚</span><strong>${value.rollback?.available?"可恢复上一 Production":"暂无上一 Production"}</strong></div></article>`;
+  $("#model-release").innerHTML=`<article class="panel production-card"><div class="panel-head"><div><span class="panel-kicker">CURRENT MODEL</span><h3>${escapeHtml(production.name||"M1KD QAT INT8 + Logits KD")}</h3></div><span class="status-pill online">Production</span></div><div class="release-facts"><div><span>生成时间</span><strong>${formatTime(production.generated_at)}</strong></div><div><span>发布时间</span><strong>${formatTime(production.deployed_at)}</strong></div><div><span>模型大小</span><strong>${production.size_mb==null?"—":`${production.size_mb.toFixed(2)} MB`}</strong></div><div><span>六分类总体准确率</span><strong>${metrics.overall_accuracy==null?"—":`${(metrics.overall_accuracy*100).toFixed(1)}%`}</strong></div><div><span>平均类别准确率</span><strong>${metrics.mean_class_accuracy==null?"—":`${(metrics.mean_class_accuracy*100).toFixed(1)}%`}</strong></div></div><div class="per-class-metrics">${classRows}</div></article><article class="panel release-card"><div class="panel-head"><h3>模型评估与发布</h3><span class="status-pill ${candidate?"online":"disabled"}">${candidate?escapeHtml(candidate.status):"无候选模型"}</span></div><div class="release-flow">${stages}</div><p>${candidate?`最近候选模型 ${escapeHtml(candidate.model_id||"—")} 当前状态：${escapeHtml(candidate.status||"candidate")}。`:"当前没有待评估 Candidate；新模型通过总体、平均类别与逐类指标门槛后方可进入 Production。"}</p><div class="rollback-state"><span>回滚</span><strong>${value.rollback?.available?"可恢复上一 Production":"暂无上一 Production"}</strong></div></article>`;
 }
 
 function durationText(seconds) {
@@ -440,7 +440,7 @@ function renderGpuSettings() {
       <div class="gpu-memory"><span style="width:${ratio}%"></span></div>
       <small>${gpu.memory_used_mb} / ${gpu.memory_total_mb} MiB</small>
       <label><input type="checkbox" data-gpu-kind="pose" value="${gpu.index}" ${pose.has(gpu.index)?"checked":""}> RTMDet/RTMPose</label>
-      <label><input type="checkbox" data-gpu-kind="student" value="${gpu.index}" ${student.has(gpu.index)?"checked":""}> M1FKD Campus6</label>
+      <label><input type="checkbox" data-gpu-kind="student" value="${gpu.index}" ${student.has(gpu.index)?"checked":""}> M1KD Campus6</label>
       <label><input type="checkbox" data-gpu-kind="teacher" value="${gpu.index}" ${teacher.has(gpu.index)?"checked":""} ${teacherAuto?"disabled":""}> Qwen3-VL-8B</label>
     </div>`;
   }).join("");

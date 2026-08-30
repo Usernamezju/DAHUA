@@ -396,8 +396,8 @@ class JobManager:
         return {
             "schema_version": "campus6_model_status.v1",
             "production": {
-                "model_id": pointer.get("current_model_id") or "m1fkd-int8-campus6",
-                "name": "M1FKD INT8 Campus6",
+                "model_id": pointer.get("current_model_id") or "m1kd-int8-campus6",
+                "name": "M1KD QAT INT8 + Logits KD",
                 "status": "production",
                 "generated_at": generated_at,
                 "deployed_at": (

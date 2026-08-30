@@ -13,10 +13,10 @@ research line.
   instability routing, structured validation, and human review on conflicts.
 - Learning loop: pseudo-label filtering, replay, distillation, candidate
   validation and release gates are retained with their tests.
-- Deployment: M1FKD portable INT8 artifact is bundled as the edge-default;
-  FP32 GAP weights and the QAT/KD/export/benchmark code are retained for
-  reproducibility. The current portable loader dequantizes before PyTorch
-  execution, so native INT8 acceleration is explicitly not asserted.
+- Deployment: the accepted M1KD QAT INT8 + Logits KD artifact is bundled as
+  the edge default (Val 47/53, Test 46/53, All 345/358); FP32 GAP weights and
+  QAT/KD code are retained for reproducibility. Native INT8 acceleration is
+  not asserted for the current PyTorch loader.
 
 Excluded from this repository: independent `our_model` ZSL/GZSL experiments,
 unrelated GCN baselines, their datasets, and research-only checkpoints.

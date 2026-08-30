@@ -8,12 +8,11 @@ video -> RTMDet/RTMPose (two COCO-17 tracks) -> ProtoGCN student
       -> optional Qwen teacher -> review / pseudo-label / retraining loop
 ```
 
-The default edge artifact is `models/student/M1FKD.deployment.int8.pt`.
-It is the exported inference-only form of the QAT INT8 model trained with
-both raw-logit and feature knowledge distillation. The 42.50 MB FP32 GAP
+The default student artifact is `models/student/M1KD.int8.pt`.
+It is the accepted QAT INT8 model trained with logits knowledge distillation
+(Val 47/53, Test 46/53, All 345/358). The 42.50 MB FP32 GAP
 checkpoint remains in `models/student/` as the training teacher and regression
-baseline. See `models/MANIFEST.json` and `reports/` for hashes and benchmark
-evidence.
+baseline. See `models/MANIFEST.json` for the weight hash and acceptance metrics.
 
 ## Layout
 
@@ -47,11 +46,10 @@ dedicated environment and set `DAHUA_QWEN_MODEL_DIR`.
 
 ## Run
 
-The documented production path remains the FP32 Web student while native INT8
-execution is not yet available in the current PyTorch loader. It may load the
-portable INT8 checkpoint for validation, but dequantizes it before executing
-FP32 CUDA operators. Do not claim native INT8 acceleration until a TensorRT,
-RKNN, or equivalent backend is added and benchmarked.
+The production Web student loads the accepted M1KD QAT INT8 checkpoint through
+the portable quantized-state loader. The current PyTorch path restores those
+weights into the CUDA inference graph; native INT8 kernel acceleration requires
+a TensorRT, RKNN, or equivalent backend and is not claimed here.
 
 ```bash
 export DAHUA_CODE_ROOT="$PWD"

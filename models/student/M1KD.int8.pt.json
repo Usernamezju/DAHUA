@@ -1,0 +1,19 @@
+{
+  "model": "M1KD",
+  "path": "models/student/M1KD.int8.pt",
+  "bytes": 5666709,
+  "size_mib": 5.4041948318481445,
+  "sha256": "570f775e98c1643fd25c4b96e8478f2aa0c986e6beb929e355a28eb7d779c33d",
+  "quant_bits": 8,
+  "training_recipe": "QAT INT8 + logits KD",
+  "acceptance_metrics": {
+    "validation": {"correct": 47, "total": 53, "accuracy": 0.8867924528301887},
+    "test": {"correct": 46, "total": 53, "accuracy": 0.8679245283018868},
+    "all": {"correct": 345, "total": 358, "accuracy": 0.9636871508379888}
+  },
+  "serialized_runtime_regression": {
+    "validation": {"correct": 47, "total": 53, "accuracy": 0.8867924528301887},
+    "test": {"correct": 45, "total": 53, "accuracy": 0.8490566037735849},
+    "all": {"correct": 344, "total": 358, "accuracy": 0.9608938547486033}
+  }
+}

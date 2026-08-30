@@ -189,7 +189,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 current.resolve_student_checkpoint() or ""
             ),
             "student_runtime": {
-                "name": "M1FKD INT8",
+                "name": "M1KD QAT INT8 + Logits KD",
                 "role": "Web inference deployment model",
                 "checkpoint": str(current.resolve_student_checkpoint() or ""),
                 "execution": "portable INT8 weights loaded through the deployment graph",

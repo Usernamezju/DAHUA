@@ -24,7 +24,7 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("--runtime", action="store_true", help="also inspect local model files")
     value.add_argument("--checkpoint", default=str(REPOSITORY_ROOT / "models/student/campus6_protogcn_gap_fp32_epoch40.pth"))
-    value.add_argument("--int8-checkpoint", default=str(REPOSITORY_ROOT / "models/student/M1FKD.deployment.int8.pt"))
+    value.add_argument("--int8-checkpoint", default=str(REPOSITORY_ROOT / "models/student/M1KD.int8.pt"))
     value.add_argument("--output", help="optional JSON report path")
     return value
 

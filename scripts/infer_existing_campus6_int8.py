@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate missing per-sample M1FKD INT8 probabilities from existing skeletons."""
+"""Generate per-sample Campus6 INT8 probabilities from existing skeletons."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def main(argv=None) -> None:
     )
 
     # Use the exact deterministic loader and multi-clip aggregation used to
-    # produce M1FKD.metrics.json.  Calling inference_recognizer per sample is
+    # produce the acceptance metrics. Calling inference_recognizer per sample is
     # not equivalent to this acceptance protocol.
     cfg = mmcv.Config.fromfile(str(Path(args.config).resolve()))
     logit_batches, label_batches = [], []
@@ -123,7 +123,7 @@ def main(argv=None) -> None:
     temporary.replace(destination)
     predicted = probabilities.argmax(axis=1)
     summary = {
-        "schema_version": "campus6_m1fkd_predictions.v1",
+        "schema_version": "campus6_int8_predictions.v1",
         "checkpoint": str(Path(args.checkpoint).resolve()),
         "checkpoint_format": checkpoint_format,
         "deployment_metadata": metadata,

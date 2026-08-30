@@ -112,7 +112,7 @@ class Campus6Baseline:
                     "label_space_size": len(LABELS),
                     "modality": "joint",
                     "generated_at": generated,
-                    "checkpoint": "models/student/M1FKD.deployment.int8.pt",
+                    "checkpoint": "models/student/M1KD.int8.pt",
                     "checkpoint_sha256": checkpoint_hash,
                     "checkpoint_format": "portable_int8",
                     "model_role": "production student inference",

@@ -214,11 +214,14 @@ class WeightActivationFakeQuant:
 
 
 def export_quantized_state_dict(model, destination: str | Path, metadata: dict, num_bits: int = 8) -> dict:
-    """Persist every floating tensor as per-tensor symmetric INT8 or INT4.
+    """Persist QAT-covered Conv/Linear weights as symmetric INT8 or INT4.
 
-    This is a portable deployment artifact.  The paired loader dequantizes it
-    for PyTorch evaluation; deployment backends may consume the int8 tensors
-    directly or convert the model to ONNX QDQ.
+    ``WeightActivationFakeQuant`` only quantizes Conv2d/Linear weights during
+    training. Quantizing graph-adjacency parameters, normalization statistics,
+    biases, or semantic buffers at export time changes the trained model and
+    can severely reduce accuracy. Those tensors therefore retain their trained
+    dtype. The paired loader dequantizes covered weights for PyTorch evaluation;
+    deployment backends may consume the integer tensors directly.
     """
     import torch
 
@@ -227,9 +230,15 @@ def export_quantized_state_dict(model, destination: str | Path, metadata: dict, 
 
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    quantized_names = set()
+    for module_name, module in model.named_modules():
+        if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
+            prefix = f"{module_name}." if module_name else ""
+            quantized_names.add(prefix + "weight")
+
     tensors, qparams = {}, {}
     for name, value in model.state_dict().items():
-        if not value.is_floating_point():
+        if not value.is_floating_point() or name not in quantized_names:
             tensors[name] = value.cpu()
             continue
         cpu = value.detach().cpu().float()
