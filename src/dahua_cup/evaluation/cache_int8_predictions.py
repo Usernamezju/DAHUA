@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Generate per-sample Campus6 INT8 probabilities from existing skeletons."""
 
 from __future__ import annotations

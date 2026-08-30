@@ -23,6 +23,10 @@ test = ["pytest>=7.0", "httpx>=0.27"]
 dahua-web = "dahua_cup.backend.app:main"
 dahua-verify = "dahua_cup.verification:main"
 dahua-infer = "dahua_cup.pipeline.infer_video:main"
+dahua-build-annotations = "dahua_cup.pipeline.build_annotations:main"
+dahua-analyze-hard-samples = "dahua_cup.pipeline.analyze_hard_samples:main"
+dahua-audit-pose = "dahua_cup.evaluation.audit_pose_quality:main"
+dahua-cache-int8 = "dahua_cup.evaluation.cache_int8_predictions:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

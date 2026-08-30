@@ -89,9 +89,18 @@ class Settings:
     def from_env(cls) -> "Settings":
         repository_root = _path_env("DAHUA_CODE_ROOT", REPOSITORY_ROOT)
         server_data_root = Path("/workspace/data/xzz_data/DAHUA")
-        data_root = _path_env("DAHUA_DATA_ROOT", server_data_root if server_data_root.is_dir() else repository_root)
-        runtime_root = _path_env("DAHUA_VIS_RUNTIME_ROOT", data_root / "runtime" / "visualization")
-        source_root = _path_env("DAHUA_VIS_SOURCE_ROOT", data_root / "datasets" / "campus6_final")
+        configured_data_root = os.environ.get("DAHUA_DATA_ROOT", "").strip()
+        use_server_default = not configured_data_root and server_data_root.is_dir()
+        data_root = _path_env(
+            "DAHUA_DATA_ROOT",
+            server_data_root if use_server_default else repository_root / "runtime",
+        )
+        runtime_root = _path_env(
+            "DAHUA_VIS_RUNTIME_ROOT",
+            data_root / "runtime" / "campus6_product"
+            if use_server_default else data_root,
+        )
+        source_root = _path_env("DAHUA_VIS_SOURCE_ROOT", runtime_root / "videos")
         manifest_path = _path_env("DAHUA_VIS_MANIFEST", runtime_root / "campus6_manifest.csv")
         routing_env = os.environ.get("DAHUA_TEACHER_ROUTING_CONFIG", "").strip()
         routing_path = Path(routing_env).expanduser().resolve() if routing_env else CONFIG_ROOT / "campus" / "teacher_routing.yaml"
@@ -135,7 +144,8 @@ class Settings:
                      self.artifact_root / "features",
                      self.artifact_root / "pose_videos", self.artifact_root / "predictions",
                      self.artifact_root / "teachers", self.artifact_root / "work",
-                     self.runtime_root / "exports", self.runtime_root / "settings"):
+                     self.runtime_root / "exports", self.runtime_root / "settings",
+                     self.runtime_root / "videos"):
             path.mkdir(parents=True, exist_ok=True)
 
     @property

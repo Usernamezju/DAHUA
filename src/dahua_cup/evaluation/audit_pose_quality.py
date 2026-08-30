@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Create an auditable per-clip skeleton-quality manifest for Campus6."""
 
 from __future__ import annotations

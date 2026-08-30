@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Analyze the highest-value existing Campus6 hard samples with one Qwen load."""
 
 from __future__ import annotations

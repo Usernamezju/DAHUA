@@ -1,0 +1,4 @@
+# Single installation entry point for the Campus6 Web/student environment.
+# RTMDet/RTMPose and Qwen run in their existing isolated server environments.
+-e .[web,test]
+-r third_party/ProtoGCN/requirements.txt

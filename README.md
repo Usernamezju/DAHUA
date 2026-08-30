@@ -21,13 +21,15 @@ src/dahua_cup/       application, training, inference, Web API and tests' source
 third_party/ProtoGCN/ pinned upstream model implementation and Campus6 configs
 tests/                unit and integration tests
 models/               local weights (ignored by Git; manifest is tracked)
-reports/              checked benchmark and deployment reports
 docs/                 design, operations and acceptance material
+runtime/              local runtime data (ignored by Git)
+scripts/              shell launchers only
 ```
 
 This is a standard Python `src` layout: `src/dahua_cup/` is the importable
-application package, while `scripts/` holds only command-line maintenance
-tools. There are no compatibility symlinks or nested duplicate projects.
+application package. Data construction, offline evaluation and maintenance
+commands are installed from that package; `scripts/` contains only the Web
+shell launcher. There are no compatibility symlinks or duplicate projects.
 
 ## Install
 
@@ -36,9 +38,10 @@ project in editable mode. The runtime stack needs the PyTorch/MMCV versions
 compatible with the bundled ProtoGCN code.
 
 ```bash
-python -m pip install -e '.[runtime,web,test]'
-python -m pip install -r third_party/ProtoGCN/requirements.txt
-pytest
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m pytest
 ```
 
 For the optional Qwen teacher, additionally install `.[teacher]` in its
@@ -53,13 +56,17 @@ a TensorRT, RKNN, or equivalent backend and is not claimed here.
 
 ```bash
 export DAHUA_CODE_ROOT="$PWD"
-export DAHUA_DATA_ROOT="$PWD/runtime-data"
+export DAHUA_DATA_ROOT="$PWD/runtime"
 export DAHUA_CAMPUS6_CONFIG="$PWD/third_party/ProtoGCN/configs/campus6/rtmpose26_k400_2d_gap_full.py"
 export DAHUA_CAMPUS6_CHECKPOINT="$PWD/models/student/campus6_protogcn_gap_fp32_epoch40.pth"
 
 python -m dahua_cup.pipeline.rtmpose17_pose_worker --help
 python -m dahua_cup.pipeline.rtmpose17_student_worker --help
 python -m dahua_cup.semantic_teacher.distillation.campus6_compression --help
+dahua-build-annotations --help
+dahua-audit-pose --help
+dahua-cache-int8 --help
+dahua-analyze-hard-samples --help
 dahua-verify
 ```
 

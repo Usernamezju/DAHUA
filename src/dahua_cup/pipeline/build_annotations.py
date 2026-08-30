@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Build grouped Campus6 annotations from RTMPose Halpe-26 outputs.
 
 The first 17 Halpe joints use the COCO ordering expected by ProtoGCN's

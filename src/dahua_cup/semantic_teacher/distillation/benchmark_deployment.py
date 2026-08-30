@@ -167,13 +167,13 @@ def main(argv=None) -> None:
             "iterations": args.iterations,
             "timing": "host perf_counter around each CUDA forward plus synchronize",
             "memory": "PyTorch per-process CUDA allocated bytes; reset after warmup with model and input resident",
-            "comparability": "same plain deployment graph and input for M0 FP32 and M1FKD portable INT8",
+            "comparability": "same deployment graph and input for M0 FP32 and M1KD portable INT8",
             "caveat": "portable INT8 tensors are dequantized at load for this PyTorch runtime; no native INT8 backend is installed",
         },
         "gpu": _gpu_info(args.device),
         "models": [
             _benchmark("M0_FP32", Path(args.fp32), args, input_tensor),
-            _benchmark("M1FKD_portable_INT8", Path(args.int8), args, input_tensor),
+            _benchmark("M1KD_portable_INT8", Path(args.int8), args, input_tensor),
         ],
     }
     fp32, int8 = result["models"]

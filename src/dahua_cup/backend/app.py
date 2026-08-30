@@ -436,7 +436,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 app = create_app()
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Run the packaged Campus6 Web service."""
     import uvicorn
 
     uvicorn.run(
@@ -445,3 +446,7 @@ if __name__ == "__main__":
         port=int(os.environ.get("DAHUA_VIS_PORT", "8000")),
         reload=False,
     )
+
+
+if __name__ == "__main__":
+    main()
