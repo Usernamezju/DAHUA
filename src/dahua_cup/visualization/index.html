@@ -25,6 +25,25 @@
       </section>
 
       <section class="panel">
+        <div class="panel-head"><h2>样本推理工作台</h2><span id="sample-status" class="muted">正在加载样本…</span></div>
+        <div class="toolbar">
+          <label>服务器样本<select id="sample-select"><option>加载中…</option></select></label>
+          <label class="upload-button">上传视频<input id="upload" type="file" accept="video/*,.avi" hidden></label>
+          <div class="toolbar-spacer"></div>
+          <button class="button secondary" data-action="preview">生成预览</button>
+          <button class="button secondary" data-action="pose">提取 RTMPose 骨架</button>
+          <button class="button primary" data-action="full">完整 Campus6 推理</button>
+          <button class="button secondary" data-action="teacher" id="teacher-button">按需调用 Qwen</button>
+        </div>
+        <div id="job-status" class="job-progress hidden"><div><span></span></div><p></p></div>
+        <div class="video-grid">
+          <article class="panel compact"><h3>原始/预览视频</h3><div class="video-frame"><video id="source-video" controls playsinline></video><div class="video-placeholder">请选择样本</div></div></article>
+          <article class="panel compact"><h3>RTMPose COCO-17 骨架</h3><div class="video-frame pose"><video id="pose-video" controls playsinline></video><div class="video-placeholder">完成骨架提取后显示</div></div></article>
+        </div>
+        <article class="panel compact"><h3>ProtoGCN / Qwen 结果</h3><pre id="prediction">尚无预测结果</pre></article>
+      </section>
+
+      <section class="panel">
         <div class="panel-head"><h2>GPU 与 Qwen 准入</h2><span id="gpu-summary" class="muted">正在读取…</span></div>
         <div id="gpus" class="settings-grid"></div>
         <p class="muted">Qwen3-VL-32B 不会下载到本机。服务只在服务器模型目录存在、且满足空闲显存和 GPU 数量门槛时才允许调用；调用期间会独占这些卡，避免与 ProtoGCN 任务竞争。</p>
