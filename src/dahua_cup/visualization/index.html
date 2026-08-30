@@ -1,63 +1,170 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-    <meta http-equiv="Cache-Control" content="no-store"><title>Campus6 行为识别工作台</title>
-    <link rel="stylesheet" href="/static/styles.css">
-  </head>
-  <body>
-    <main class="page active">
-      <header class="panel">
-        <span class="panel-kicker">CAMPUS6 DEPLOYMENT WORKBENCH</span>
-        <h1>Campus6 行为识别</h1>
-        <p>RTMDet/RTMPose COCO-17 → GAP ProtoGCN 六分类 → 按需 Qwen3-VL 教师 → 人工复核</p>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0b111d">
+  <title>校园行为语义理解平台</title>
+  <link rel="stylesheet" href="/styles.css?v=20260720-cpupose1">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="收起侧栏" aria-expanded="true">‹</button>
+      <div class="brand">
+        <div class="brand-mark"><span></span><span></span><span></span></div>
+        <div><strong>行为语义理解</strong><small>Campus Intelligence</small></div>
+      </div>
+      <nav id="main-nav">
+        <button class="nav-item active" data-page="dashboard" title="运行总览"><i>⌂</i><span>运行总览</span></button>
+        <button class="nav-item" data-page="inference" title="推理审核台"><i>▶</i><span>推理审核台</span><b id="pending-badge">0</b></button>
+        <button class="nav-item" data-page="dataset" title="数据集"><i>▦</i><span>数据集</span></button>
+        <div class="nav-label">训练与发布</div>
+        <button class="nav-item" data-page="evolution" title="训练闭环"><i>⌁</i><span>训练闭环</span></button>
+        <button class="nav-item" data-page="models" title="模型管理"><i>◈</i><span>模型管理</span></button>
+        <button class="nav-item" data-page="settings" title="系统设置"><i>⚙</i><span>系统设置</span></button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="server-state"><span id="server-dot"></span><div><strong id="server-label">正在连接</strong><small>远程服务器</small></div></div>
+        <div class="version">DAHUA Campus · v0.1</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">校园行为语义理解算法框架</p>
+          <h1 id="page-title">运行总览</h1>
+        </div>
+        <div class="top-actions">
+          <label class="reviewer-field"><span>审核员</span><input id="reviewer" value="reviewer" maxlength="80"></label>
+          <button class="icon-button" id="refresh-button" title="刷新">↻</button>
+        </div>
       </header>
 
-      <section class="panel">
-        <div class="panel-head"><h2>服务状态</h2><button id="refresh" class="button secondary">刷新</button></div>
-        <p id="connection" class="muted">正在连接 API…</p>
-        <pre id="system" class="hidden"></pre>
+      <section class="page active" id="page-dashboard">
+        <div class="hero-panel">
+          <div>
+            <span class="status-pill online">系统在线</span>
+            <h2>从视频感知到语义审核，<br><em>形成可追溯的数据闭环。</em></h2>
+            <p>RTMDet/RTMPose 提取双人 COCO-17 骨架，Campus6 GAP ProtoGCN 完成六分类；低置信样本仅在服务器 GPU 空闲时调用 Qwen3-VL。</p>
+          </div>
+          <div class="hero-orbit" aria-hidden="true">
+            <div class="orbit-ring r1"></div><div class="orbit-ring r2"></div>
+            <div class="orbit-core">AI</div><span class="orbit-node n1">Pose</span><span class="orbit-node n2">GCN</span><span class="orbit-node n3">Review</span>
+          </div>
+        </div>
+        <div class="metric-grid" id="metrics"></div>
+        <div class="two-column">
+          <article class="panel"><div class="panel-head"><div><span class="panel-kicker">DATA BALANCE</span><h3>六分类数据分布</h3></div><button class="text-button" data-goto="dataset">查看数据集 →</button></div><div id="label-chart" class="bar-chart"></div></article>
+          <article class="panel"><div class="panel-head"><div><span class="panel-kicker">PIPELINE</span><h3>能力状态</h3></div></div><div id="capability-list" class="capability-list"></div></article>
+        </div>
+        <article class="panel"><div class="panel-head"><div><span class="panel-kicker">RECENT TASKS</span><h3>最近处理任务</h3></div></div><div id="recent-jobs" class="job-list empty-state">暂无运行任务</div></article>
       </section>
 
-      <section class="panel">
-        <div class="panel-head"><h2>可用能力</h2><span class="muted">每 10 秒自动刷新</span></div>
-        <div id="capabilities" class="model-grid"></div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head"><h2>样本推理工作台</h2><span id="sample-status" class="muted">正在加载样本…</span></div>
-        <div class="toolbar">
-          <label>服务器样本<select id="sample-select"><option>加载中…</option></select></label>
-          <label class="upload-button">上传视频<input id="upload" type="file" accept="video/*,.avi" hidden></label>
+      <section class="page" id="page-inference">
+        <div class="toolbar panel compact">
+          <div class="sample-browser">
+            <label>选择任意服务器样本</label>
+            <button class="sample-tree-toggle" id="sample-tree-toggle" type="button" aria-expanded="false"><span id="sample-tree-current">请选择服务器样本</span><i>⌄</i></button>
+            <div class="sample-tree-menu hidden" id="sample-tree-menu"><div id="sample-tree-groups" class="sample-tree-groups"></div></div>
+          </div>
+          <label class="inference-search"><span>搜索服务器样本</span><input id="inference-search" placeholder="样本 ID、来源或原类别"></label>
           <div class="toolbar-spacer"></div>
-          <button class="button secondary" data-action="preview">生成预览</button>
-          <button class="button secondary" data-action="pose">提取 RTMPose 骨架</button>
-          <button class="button primary" data-action="full">完整 Campus6 推理</button>
-          <button class="button secondary" data-action="teacher" id="teacher-button">按需调用 Qwen</button>
+          <label class="upload-button">上传到服务器<input id="video-upload" type="file" accept="video/*,.avi" hidden></label>
+          <button class="button secondary" id="run-preview">生成预览</button>
+          <button class="button secondary" id="run-pose">提取骨架</button>
+          <button class="button primary" id="run-full">运行完整推理</button>
         </div>
-        <div id="job-status" class="job-progress hidden"><div><span></span></div><p></p></div>
-        <div class="video-grid">
-          <article class="panel compact"><h3>原始/预览视频</h3><div class="video-frame"><video id="source-video" controls playsinline></video><div class="video-placeholder">请选择样本</div></div></article>
-          <article class="panel compact"><h3>RTMPose COCO-17 骨架</h3><div class="video-frame pose"><video id="pose-video" controls playsinline></video><div class="video-placeholder">完成骨架提取后显示</div></div></article>
-        </div>
-        <article class="panel compact"><h3>ProtoGCN / Qwen 结果</h3><pre id="prediction">尚无预测结果</pre></article>
+        <div id="inference-job" class="job-progress hidden"><div><span></span></div><p></p></div>
+        <div class="workbench-layout">
+          <div class="inspection-workspace">
+            <div class="video-grid workbench-videos">
+              <article class="panel video-panel"><div class="panel-head"><div><span class="panel-kicker">SOURCE VIDEO</span><h3>原始视频</h3></div><span class="artifact-tag" id="source-status">未选择</span></div><div class="video-frame"><video id="source-video" controls loop playsinline></video><div class="video-placeholder">请选择一个视频样本</div></div></article>
+              <article class="panel video-panel"><div class="panel-head"><div><span class="panel-kicker">POSE ONLY</span><h3>RTMPose COCO-17 骨架</h3></div><span class="artifact-tag" id="pose-status">未生成</span></div><div class="video-frame pose"><video id="pose-video" controls loop playsinline></video><div class="video-placeholder">运行骨架提取后显示</div></div></article>
+            </div>
+
+            <article class="panel evidence-panel">
+              <div class="panel-head"><div><span class="panel-kicker">STUDENT EVIDENCE</span><h3>Campus6 ProtoGCN Top-5</h3></div><span class="model-chip">Campus6 · GAP</span></div>
+              <div id="prediction-list" class="prediction-list empty-state">尚无预测结果</div>
+              <div id="student-evidence" class="evidence-details hidden"></div>
+              <div class="warning-note">当前使用 Campus6 GAP ProtoGCN FP32 基线；提交审核时会固化 Top-5、权重哈希和任务状态。</div>
+            </article>
+
+            <article class="panel teacher-panel disabled-region">
+              <div class="panel-head"><div><span class="panel-kicker">SEMANTIC TEACHER</span><h3>大模型语义分析</h3></div><span id="teacher-status" class="status-pill disabled">尚未启用</span></div>
+              <div id="teacher-result" class="teacher-placeholder">
+                <div class="teacher-icon">◇</div>
+                <div><strong>Qwen 多模态语义教师</strong><p>启用后展示当前闭集标签建议、置信度、关键证据片段、交互关系和简短判定依据。</p></div>
+              </div>
+              <button class="button disabled" id="run-teacher" disabled>运行大模型分析</button>
+            </article>
+
+          </div>
+
+          <aside class="panel label-panel decision-panel">
+            <div class="decision-section-title">校园行为六分类</div>
+            <div id="label-buttons" class="label-grid"></div>
+            <div class="decision-section-title special-title">特殊审核结果</div>
+            <div class="special-actions"><button data-special="unknown">无法判断</button><button data-special="damaged">视频损坏</button><button data-special="out_of_scope">无关样本</button></div>
+            <label class="note-field"><span>审核备注（可选）</span><textarea id="review-note" rows="4" placeholder="例如：双方有明显防御性后退，接触力度较大"></textarea></label>
+            <div class="review-actions stacked-actions"><button class="button ghost" id="undo-review">撤销最近审核</button><button class="button secondary" id="previous-review">← 上一个</button><button class="button primary" id="next-review">下一个 →</button></div>
+          </aside>
+          </div>
       </section>
 
-      <section class="panel">
-        <div class="panel-head"><h2>GPU 与 Qwen 准入</h2><span id="gpu-summary" class="muted">正在读取…</span></div>
-        <div id="gpus" class="settings-grid"></div>
-        <p class="muted">Qwen3-VL-32B 不会下载到本机。服务只在服务器模型目录存在、且满足空闲显存和 GPU 数量门槛时才允许调用；调用期间会独占这些卡，避免与 ProtoGCN 任务竞争。</p>
+      <section class="page" id="page-dataset">
+        <div class="toolbar panel compact">
+          <div class="stat-inline"><strong id="dataset-total">0</strong><span>服务器样本</span></div>
+          <select id="dataset-source"><option value="all">全部来源</option></select>
+          <select id="dataset-status"><option value="all">全部状态</option><option value="pending">待审核</option><option value="reviewed">已标注</option><option value="unknown">无法判断</option><option value="damaged">损坏</option><option value="out_of_scope">无关</option></select>
+          <input id="dataset-search" class="wide-search" placeholder="搜索 ID、来源标签或路径">
+          <div class="toolbar-spacer"></div><button class="button primary" id="export-dataset">导出审核清单</button>
+        </div>
+        <article class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>样本</th><th>来源</th><th>原类别</th><th>候选标签</th><th>人工标签</th><th>状态</th><th>操作</th></tr></thead><tbody id="dataset-table"></tbody></table></div><div class="pagination"><button id="page-prev">←</button><span id="page-info">第 1 页</span><button id="page-next">→</button></div></article>
       </section>
 
-      <section class="panel">
-        <h2>模型与操作</h2>
-        <ul>
-          <li>FP32 Campus6 GAP ProtoGCN（42.50 MB）：训练、验证与标准推理基线。</li>
-          <li>INT8 M1FKD 部署权重（4.56 MB）：量化和蒸馏后的部署工件。</li>
-          <li>通过 <a href="/docs">/docs</a> 调用 API；样本导入、姿态提取、分类及教师任务由 <code>/api/samples</code> 接口管理。</li>
-        </ul>
+      <section class="page" id="page-evolution">
+        <div class="page-intro"><div><span class="panel-kicker">CAMPUS6 TRAINING LOOP</span><h2>训练闭环中心</h2><p>人工审核、Qwen 弱监督、回放、蒸馏与 QAT 均按可审计批次执行，不会自动替换线上权重。</p></div></div>
+        <div id="pipeline-flow" class="pipeline-flow"></div>
+        <div class="two-column">
+          <article class="panel">
+            <div class="panel-head"><h3>教师、伪标签与难例</h3><span id="evolution-status" class="status-pill disabled">正在读取</span></div>
+            <p class="muted">Qwen 的 Campus6 结果经过学生置信度、类别间隔和姿态质量筛选；难例进入人工审核队列。</p>
+            <div id="evolution-counts" class="settings-grid evolution-summary"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><h3>Campus6 蒸馏、验证与发布</h3><button id="run-evolution" class="button secondary">批次训练说明</button></div>
+            <p class="muted">候选模型通过同一验证集指标、回归测试和部署门槛后，才可由人工发布。</p>
+            <pre id="evolution-training">正在读取训练闭环状态</pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="page" id="page-models">
+        <div class="page-intro"><div><span class="panel-kicker">MODEL REGISTRY</span><h2>模型与能力</h2><p>当前交付模型、部署工件及服务器语义教师的状态。</p></div></div>
+        <div id="model-grid" class="model-grid"></div>
+      </section>
+
+      <section class="page" id="page-settings">
+        <div class="page-intro"><div><span class="panel-kicker">SERVER CONFIGURATION</span><h2>服务器配置</h2><p>这些目录全部位于后端服务器，本地浏览器不保存项目数据。</p></div></div>
+        <article class="panel settings-panel gpu-settings-panel">
+          <div class="panel-head">
+            <div><span class="panel-kicker">DEVICE SCHEDULING</span><h3>推理设备调度</h3><p class="muted">RTMPose 固定使用 CPU；在这里选择 ProtoGCN 可使用的 GPU。Qwen 仅在满足空闲 GPU 准入条件时启动。</p></div>
+            <div class="gpu-actions"><span id="gpu-status" class="status-pill disabled">正在检测</span><button id="refresh-gpus" class="button secondary">刷新状态</button></div>
+          </div>
+          <div id="gpu-grid" class="gpu-grid"></div>
+          <div class="gpu-settings-foot">
+            <p id="gpu-help" class="muted"></p>
+            <button id="save-gpu-settings" class="button primary">保存 GPU 设置</button>
+          </div>
+        </article>
+        <article class="panel settings-panel"><div id="system-paths" class="settings-grid"></div></article>
+        <article class="panel"><div class="panel-head"><h3>环境配置提示</h3></div><pre id="environment-help"></pre></article>
       </section>
     </main>
-    <script src="/static/app.js" defer></script>
-  </body>
+  </div>
+  <div id="toast-root"></div>
+  <script src="/app.js?v=20260803-job-dedup1" defer></script>
+</body>
 </html>
