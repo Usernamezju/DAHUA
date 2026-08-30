@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -252,6 +254,43 @@ class Settings:
         ).resolve()
         return candidate if candidate.is_file() else None
 
+    def student_probability_temperature(self) -> float:
+        """Return the validation-fitted temperature for live M1KD output.
+
+        The prediction-cache sidecar is the source of truth for this scalar.
+        An explicit environment override is retained for a future promoted
+        model; no sidecar means an identity transformation.
+        """
+        configured = os.environ.get(
+            "DAHUA_CAMPUS6_PROBABILITY_TEMPERATURE", ""
+        ).strip()
+        value: object = configured or 1.0
+        if not configured:
+            predictions = self.baseline_predictions()
+            sidecar = (
+                predictions.with_suffix(predictions.suffix + ".json")
+                if predictions is not None else None
+            )
+            if sidecar is not None and sidecar.is_file():
+                try:
+                    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+                    value = (payload.get("confidence_calibration") or {}).get(
+                        "temperature", 1.0
+                    )
+                except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                    value = 1.0
+        try:
+            temperature = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "DAHUA_CAMPUS6_PROBABILITY_TEMPERATURE must be positive"
+            ) from exc
+        if not math.isfinite(temperature) or temperature <= 0:
+            raise ValueError(
+                "DAHUA_CAMPUS6_PROBABILITY_TEMPERATURE must be positive"
+            )
+        return temperature
+
     def default_student_command(self) -> str:
         if self.student_command:
             return self.student_command
@@ -264,7 +303,8 @@ class Settings:
         return (f"{shlex.quote(python_bin)} -m dahua_cup.pipeline.rtmpose17_student_worker "
                 "--sample-id {sample_id} --feature {feature} --output {prediction} "
                 f"--config {shlex.quote(config)} --checkpoint {shlex.quote(str(checkpoint))} --checkpoint-format quantized "
-                f"--label-map {shlex.quote(str(labels))} --device {{device}}")
+                f"--label-map {shlex.quote(str(labels))} --device {{device}} "
+                "--temperature {student_temperature}")
 
     def default_teacher_command(self) -> str:
         """Build an on-server Qwen command without downloading model weights.

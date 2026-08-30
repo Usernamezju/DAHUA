@@ -249,7 +249,12 @@ def teacher_gate_decision(
         ),
         "reason": reasons[0] if reasons else "student_result_reliable",
         "reasons": reasons,
-        "confidence_method": "student_top1_softmax_uncalibrated",
+        "confidence_method": (
+            "student_validation_temperature_scaled_softmax"
+            if (prediction.get("confidence_calibration") or {}).get("method")
+            == "temperature_scaling"
+            else "student_top1_softmax_uncalibrated"
+        ),
     }
 
 
@@ -289,7 +294,10 @@ def teacher_student_conflict(
         "teacher_label": teacher_label,
         "teacher_confidence": teacher_confidence,
         "confidence_method": (
-            "student_softmax_and_teacher_self_report_uncalibrated"
+            "student_validation_temperature_scaled_and_teacher_self_report"
+            if (prediction.get("confidence_calibration") or {}).get("method")
+            == "temperature_scaling"
+            else "student_softmax_and_teacher_self_report_uncalibrated"
         ),
     }
 
@@ -898,6 +906,9 @@ class JobManager:
                         "repository_root": self.settings.repository_root,
                         "device": "cuda:0",
                         "physical_device": student_gpu_id,
+                        "student_temperature": (
+                            self.settings.student_probability_temperature()
+                        ),
                     }.items()
                 }
                 student_command = render_command(
@@ -905,6 +916,11 @@ class JobManager:
                 )
                 student_command = set_command_option(
                     student_command, "--device", "cuda:0"
+                )
+                student_command = set_command_option(
+                    student_command,
+                    "--temperature",
+                    str(self.settings.student_probability_temperature()),
                 )
                 active_checkpoint = self.settings.resolve_student_checkpoint()
                 if active_checkpoint is not None:

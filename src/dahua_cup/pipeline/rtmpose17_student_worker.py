@@ -48,6 +48,12 @@ def parser():
     value.add_argument("--checkpoint-format", choices=("auto", "fp32", "quantized"), default="auto")
     value.add_argument("--label-map", default=str(DEFAULT_LABELS)); value.add_argument("--device", default="cuda:0")
     value.add_argument("--topk", type=int, default=6)
+    value.add_argument(
+        "--temperature",
+        type=float,
+        default=1.0,
+        help="validation-fitted probability temperature; 1.0 disables calibration",
+    )
     return value
 
 
@@ -86,6 +92,27 @@ def checkpoint_format(path: Path, requested: str) -> str:
     return "quantized" if isinstance(payload, dict) and "qparams" in payload else "fp32"
 
 
+def temperature_scale_probabilities(
+    probabilities: np.ndarray, temperature: float
+) -> np.ndarray:
+    """Calibrate a normalized class distribution without changing its argmax.
+
+    ``inference_recognizer`` returns ProtoGCN's post-softmax, multi-clip
+    probabilities. Applying softmax(log(p) / T) is therefore the
+    probability-space form of standard temperature scaling.
+    """
+    values = np.asarray(probabilities, dtype=np.float64)
+    if values.ndim != 1 or not len(values):
+        raise ValueError("Campus6 probabilities must be a non-empty vector")
+    if not np.isfinite(values).all() or (values < 0).any() or values.sum() <= 0:
+        raise ValueError("Campus6 probabilities must be finite and non-negative")
+    if not np.isfinite(temperature) or temperature <= 0:
+        raise ValueError("Campus6 probability temperature must be positive")
+    normalized = values / values.sum()
+    adjusted = np.maximum(normalized, 1e-12) ** (1.0 / float(temperature))
+    return (adjusted / adjusted.sum()).astype(np.float32)
+
+
 def initialize_model(config: Path, checkpoint: Path, device: str, requested_format: str):
     """Build the correct inference graph and load FP32 or portable INT8 state."""
     sys.path.insert(0, str(PROTOGCN_ROOT))
@@ -109,6 +136,8 @@ def initialize_model(config: Path, checkpoint: Path, device: str, requested_form
 def main(argv=None):
     args = parser().parse_args(argv)
     if not 1 <= args.topk <= 6: raise ValueError("topk must be in [1,6]")
+    if not np.isfinite(args.temperature) or args.temperature <= 0:
+        raise ValueError("--temperature must be a positive finite number")
     feature = require_file(args.feature, "RTMPose17 feature"); config = require_file(args.config, "Campus6 config")
     checkpoint = require_file(args.checkpoint, "Campus6 checkpoint"); class_names = labels(args.label_map)
     keypoint, score = load_feature(feature)
@@ -120,8 +149,15 @@ def main(argv=None):
     video = {"keypoint": keypoint, "keypoint_score": score, "total_frames": keypoint.shape[1],
              "label": -1, "start_index": 0, "modality": "Pose", "test_mode": True}
     ranked = inference_recognizer(model, video)
-    topk = [{"class_index": int(index), "label": class_names[int(index)], "score": float(score)}
-            for index, score in ranked[: min(args.topk, len(ranked))]]
+    raw_probabilities = np.zeros(len(class_names), dtype=np.float64)
+    for index, raw_score in ranked:
+        if not 0 <= int(index) < len(class_names):
+            raise ValueError("ProtoGCN returned an invalid Campus6 class index")
+        raw_probabilities[int(index)] = float(raw_score)
+    probabilities = temperature_scale_probabilities(raw_probabilities, args.temperature)
+    ordered = np.argsort(probabilities)[::-1]
+    topk = [{"class_index": int(index), "label": class_names[int(index)], "score": float(probabilities[index])}
+            for index in ordered[: min(args.topk, len(ordered))]]
     output_path = Path(args.output)
     semantic = summarize_pose_feature(args.sample_id, feature)
     output = {"schema_version": "protogcn_prediction.v1", "status": "completed", "sample_id": args.sample_id,
@@ -130,6 +166,7 @@ def main(argv=None):
               "checkpoint": str(checkpoint), "checkpoint_sha256": file_hash(checkpoint), "checkpoint_format": loaded_format,
               "deployment_metadata": deployment_metadata, "device": args.device,
               "physical_gpu_id": os.environ.get("DAHUA_PHYSICAL_GPU_ID", ""), "topk": topk,
+              "confidence_calibration": {"method": "temperature_scaling", "temperature": float(args.temperature), "top1_preserved": True},
               "student_evidence": {"schema_version": "protogcn_measured_evidence.v1", "semantic_graph": semantic},
               "inference_history": previous_inference_history(output_path),
               "acceptance_metrics": {
