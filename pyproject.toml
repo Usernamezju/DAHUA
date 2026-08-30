@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dahua-campus6"
+version = "1.0.0"
+description = "Campus6 behavior recognition: RTMPose, ProtoGCN, optional Qwen teacher, and review loop"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+  "numpy>=1.21",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+runtime = ["torch", "mmcv-full", "mmpose>=1.2", "mmdet>=3.0", "opencv-python>=4.7"]
+web = ["fastapi>=0.100", "uvicorn[standard]>=0.22", "pydantic>=2.0"]
+teacher = ["torch", "transformers>=4.57", "accelerate"]
+test = ["pytest>=7.0", "httpx>=0.27"]
+
+[project.scripts]
+dahua-web = "dahua_cup.backend.app:main"
+dahua-verify = "dahua_cup.scripts.verify_requirements:main"
+dahua-infer = "dahua_cup.pipeline.infer_video:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dahua_cup = [
+  "configs/**/*.yaml", "configs/**/*.txt", "configs/**/*.py",
+  "dataset_construction/**/*.json", "dataset_construction/**/*.txt",
+  "dataset_construction/**/*.sh", "semantic_teacher/**/*.json",
+  "semantic_teacher/**/*.yaml", "semantic_teacher/**/*.txt",
+  "visualization/*", "stn/web/*"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra"

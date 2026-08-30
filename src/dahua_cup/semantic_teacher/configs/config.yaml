@@ -1,0 +1,17 @@
+schema_version: semantic_teacher.v1
+model:
+  model_dir: ${oc.env:DAHUA_MODEL_ROOT,/workspace/data/xzz_data/DAHUA/models}/Qwen3-VL-32B-Instruct
+  revision: null
+  dtype: bfloat16
+  device_map: auto
+  attn_implementation: sdpa
+  local_files_only: true
+generation:
+  do_sample: false
+  max_new_tokens: 512
+  retries: 2
+  max_frames: 8
+prompt:
+  version: campus6-v1.0
+output:
+  schema_version: teacher_output.v1

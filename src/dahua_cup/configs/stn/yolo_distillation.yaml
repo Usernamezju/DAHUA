@@ -1,0 +1,40 @@
+schema_version: stn_yolo_distillation.v1
+
+data:
+  teacher_jsonl: /workspace/data/xzz_data/DAHUA/datasets/stn/yolo_tracks.jsonl
+  validation_fraction: 0.15
+  clip_length: 16
+  frame_stride: 2
+  image_size: 128
+  scale_factors: [1.0, 0.5, 0.25]
+  horizontal_flip_probability: 0.5
+  balanced_sampling: true
+
+model:
+  input_channels: 3
+  feature_channels: 48
+  maximum_people: 2
+  minimum_box_fraction: 0.01
+  minimum_crop_fraction: 0.25
+  context_factor: 1.25
+
+loss:
+  presence_weight: 1.0
+  box_weight: 5.0
+  giou_weight: 2.0
+  group_weight: 3.0
+  containment_weight: 4.0
+  occupancy_weight: 1.0
+  temporal_weight: 0.5
+
+training:
+  output_dir: /workspace/data/xzz_data/DAHUA/models/stn/set_aware_group
+  epochs: 50
+  batch_size: 8
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  workers: 4
+  device: cuda:0
+  amp: true
+  gradient_clip: 5.0
+  seed: 20260729

@@ -1,0 +1,35 @@
+{
+  "schema_version": "dahua_model_manifest.v1",
+  "edge_default": {
+    "path": "models/student/M1FKD.deployment.int8.pt",
+    "sha256": "5ab0cfc4bd4d91eac2502a46c213b6bf31a015d54d1de5a2b144265690b2173b",
+    "bytes": 4561579,
+    "format": "campus6_deployment.v1",
+    "training_recipe": "M1FKD: INT8 QAT + logits KD + three-stage feature KD",
+    "runtime_note": "The current PyTorch loader dequantizes this portable artifact and executes FP32 CUDA operators."
+  },
+  "training_and_regression": [
+    {
+      "path": "models/student/campus6_protogcn_gap_fp32_epoch40.pth",
+      "sha256": "e0656dd850b65c987a7167847d37429c6580cdbd51eda39777672cb1b85ca254",
+      "bytes": 42497873,
+      "role": "Campus6 GAP FP32 teacher and regression baseline"
+    },
+    {
+      "path": "models/pretrained/k400_joint_full_epoch150.pth",
+      "sha256": "1f71b45dd9741828f0cd1ab1940a5d5f5bf687d83231c805e710f9f1b176ef79",
+      "bytes": 35758566,
+      "role": "Kinetics-400 ProtoGCN joint pretraining checkpoint"
+    },
+    {
+      "path": "models/pretrained/k400_joint_backbone_only.pth",
+      "sha256": "2ad558a297a8dd72d30e8792be2dc3a30d7dd8c85d4ae8dfd56940275a434f37",
+      "bytes": 34688298,
+      "role": "Kinetics-400 backbone-only initialization for Campus6 fine-tuning"
+    }
+  ],
+  "pose_assets": [
+    {"path": "models/pose/rtmdet-m_person_detector.pth", "sha256": "35b0c7406499e0d141dd6a0235db07c10d2bee8f891f8f4e353c16a009de30e8", "bytes": 99013732},
+    {"path": "models/pose/rtmpose-m_coco17.pth", "sha256": "e48f03d0cfe1285ee8b6d3457ac3ce33a4594a92b080053ab1ec4a7e300975f2", "bytes": 54551099}
+  ]
+}

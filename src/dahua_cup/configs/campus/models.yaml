@@ -1,0 +1,28 @@
+defaults:
+  - paths
+pose:
+  backend: mediapipe
+  model: ${model_root}/pose_models/mediapipe/pose_landmarker_heavy.task
+  num_poses: 2
+  min_pose_detection_confidence: 0.5
+  min_pose_presence_confidence: 0.5
+  min_tracking_confidence: 0.5
+  joint_score_threshold: 0.2
+student:
+  config: ${gcn_root}/ProtoGCN/configs/ntu120_xsub/b.py
+  checkpoint: ${model_root}/protogcn_pretrained/ntu120_xsub_bone_b1/best_top1_acc_epoch_150.pth
+  label_map: ${gcn_root}/GAP/text/ntu120_label_map.txt
+  layout: nturgb+d
+  modality: bone
+  max_people: 2
+  clip_frames: 100
+  num_classes: 120
+teacher:
+  model_id: Qwen/Qwen3-VL-8B-Instruct
+  model_dir: ${oc.env:DAHUA_QWEN_MODEL_DIR,/workspace/data/public_data/Qwen3-VL-8B-Instruct}
+  revision: null
+  dtype: ${oc.env:DAHUA_QWEN_DTYPE,float16}
+  device_map: ${oc.env:DAHUA_QWEN_DEVICE_MAP,auto}
+  attn_implementation: ${oc.env:DAHUA_QWEN_ATTN_IMPLEMENTATION,sdpa}
+  local_files_only: true
+  max_concurrency: 1

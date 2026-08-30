@@ -1,0 +1,29 @@
+# Runtime data, secrets, caches and experiment outputs
+.env
+.secrets/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+runtime/
+artifacts/
+work_dirs/
+wandb/
+*.log
+
+# Datasets and local model assets remain in the project directory but are not
+# committed to ordinary Git. Their exact hashes are recorded in
+# models/MANIFEST.json; use Git LFS if they must be published.
+data/
+datasets/
+models/**/*.pth
+models/**/*.pt
+models/**/*.onnx
+models/**/*.rknn
+models/**/*.task
+!models/MANIFEST.json
+!models/**/*.json

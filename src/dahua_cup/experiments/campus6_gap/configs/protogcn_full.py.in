@@ -1,0 +1,48 @@
+"""Render this template before training; it intentionally has no file paths."""
+
+ann_file = "${CAMPUS6_PROTO_ANN}"
+work_dir = "${CAMPUS6_PROTO_WORK_DIR}"
+load_from = "${CAMPUS6_PROTO_PRETRAINED}"
+
+model = dict(
+    type="RecognizerGCN",
+    backbone=dict(
+        type="ProtoGCN", num_prototype=400,
+        tcn_ms_cfg=[(3, 1), (3, 2), (3, 3), (3, 4), ("max", 3), "1x1"],
+        graph_cfg=dict(layout="coco_new", mode="random", num_filter=8, init_off=.04, init_std=.02),
+    ),
+    cls_head=dict(type="SimpleHead", joint_cfg="coco_new", num_classes=6, in_channels=384,
+                  weight=.2, dropout=.20, loss_cls=dict(type="CrossEntropyLoss")),
+)
+dataset_type = "PoseDataset"
+left_kp = [1, 3, 5, 7, 9, 11, 13, 15]
+right_kp = [2, 4, 6, 8, 10, 12, 14, 16]
+train_pipeline = [
+    dict(type="UniformSampleFrames", clip_len=100), dict(type="PoseDecode"),
+    dict(type="Flip", flip_ratio=.5, left_kp=left_kp, right_kp=right_kp),
+    dict(type="Kinetics_Transform", dataset="coco_new"),
+    dict(type="GenSkeFeat", dataset="coco_new", feats=["j"]),
+    dict(type="FormatGCNInput", num_person=2),
+    dict(type="Collect", keys=["keypoint", "label"], meta_keys=[]), dict(type="ToTensor", keys=["keypoint"]),
+]
+eval_pipeline = [
+    dict(type="UniformSampleFrames", clip_len=100, num_clips=1), dict(type="PoseDecode"),
+    dict(type="Kinetics_Transform", dataset="coco_new"),
+    dict(type="GenSkeFeat", dataset="coco_new", feats=["j"]),
+    dict(type="FormatGCNInput", num_person=2),
+    dict(type="Collect", keys=["keypoint", "label"], meta_keys=[]), dict(type="ToTensor", keys=["keypoint"]),
+]
+data = dict(
+    videos_per_gpu=24, workers_per_gpu=4, test_dataloader=dict(videos_per_gpu=8),
+    train=dict(type=dataset_type, ann_file=ann_file, split="train", pipeline=train_pipeline),
+    val=dict(type=dataset_type, ann_file=ann_file, split="val", pipeline=eval_pipeline),
+    test=dict(type=dataset_type, ann_file=ann_file, split="test", pipeline=eval_pipeline),
+)
+optimizer = dict(type="SGD", lr=.003, momentum=.9, weight_decay=.0005, nesterov=True)
+lr_config = dict(policy="CosineAnnealing", min_lr=0, by_epoch=False)
+total_epochs = 60
+checkpoint_config = dict(interval=5)
+evaluation = dict(interval=5, metrics=["top_k_accuracy", "mean_class_accuracy"], topk=(1, 5), save_best="top1_acc")
+log_config = dict(interval=10, hooks=[dict(type="TextLoggerHook")])
+dist_params = dict(backend="nccl")
+workflow = [("train", 1)]

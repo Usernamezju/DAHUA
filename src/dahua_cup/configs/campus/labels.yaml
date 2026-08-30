@@ -1,0 +1,15 @@
+schema_version: labels.v1
+labels:
+  - normal_walk
+  - normal_run
+  - playful_chase
+  - playful_push
+  - conflict_chase
+  - conflict_push
+display_names:
+  normal_walk: 正常行走
+  normal_run: 正常奔跑
+  playful_chase: 嬉戏追逐
+  playful_push: 嬉戏推搡
+  conflict_chase: 冲突追逐
+  conflict_push: 冲突推搡

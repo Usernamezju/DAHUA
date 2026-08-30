@@ -1,0 +1,12 @@
+code_root: ${oc.env:DAHUA_CODE_ROOT,/workspace/code/DAHUA}
+competition_root: ${code_root}/dahua_cup
+gcn_root: ${code_root}/gcn_models
+data_root: ${oc.env:DAHUA_DATA_ROOT,/workspace/data/xzz_data/DAHUA}
+model_root: ${oc.env:DAHUA_MODEL_ROOT,/workspace/data/xzz_data/DAHUA/models}
+experiment_root: ${data_root}/experiments/pipeline
+outputs:
+  features: ${data_root}/datasets/processed/features
+  graphs: ${data_root}/datasets/processed/graphs
+  pseudo: ${data_root}/datasets/pseudo
+  review: ${data_root}/datasets/review
+  registry: ${experiment_root}/registry

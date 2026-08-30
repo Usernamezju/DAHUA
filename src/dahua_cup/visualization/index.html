@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0b111d">
+  <title>校园行为语义理解平台</title>
+  <link rel="stylesheet" href="/styles.css?v=20260720-cpupose1">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="收起侧栏" aria-expanded="true">‹</button>
+      <div class="brand">
+        <div class="brand-mark"><span></span><span></span><span></span></div>
+        <div><strong>行为语义理解</strong><small>Campus Intelligence</small></div>
+      </div>
+      <nav id="main-nav">
+        <button class="nav-item active" data-page="dashboard" title="运行总览"><i>⌂</i><span>运行总览</span></button>
+        <button class="nav-item" data-page="inference" title="推理审核台"><i>▶</i><span>推理审核台</span><b id="pending-badge">0</b></button>
+        <button class="nav-item" data-page="dataset" title="数据集"><i>▦</i><span>数据集</span></button>
+        <div class="nav-label">自进化闭环</div>
+        <button class="nav-item" data-page="evolution" title="闭环中心"><i>⌁</i><span>闭环中心</span></button>
+        <button class="nav-item" data-page="models" title="模型管理"><i>◈</i><span>模型管理</span></button>
+        <button class="nav-item" data-page="settings" title="系统设置"><i>⚙</i><span>系统设置</span></button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="server-state"><span id="server-dot"></span><div><strong id="server-label">正在连接</strong><small>远程服务器</small></div></div>
+        <div class="version">DAHUA Campus · v0.1</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">校园行为语义理解算法框架</p>
+          <h1 id="page-title">运行总览</h1>
+        </div>
+        <div class="top-actions">
+          <label class="reviewer-field"><span>审核员</span><input id="reviewer" value="reviewer" maxlength="80"></label>
+          <button class="icon-button" id="refresh-button" title="刷新">↻</button>
+        </div>
+      </header>
+
+      <section class="page active" id="page-dashboard">
+        <div class="hero-panel">
+          <div>
+            <span class="status-pill online">系统在线</span>
+            <h2>从视频感知到语义审核，<br><em>形成可追溯的数据闭环。</em></h2>
+            <p>MediaPipe 提取 NTU25 骨架，ProtoGCN 完成动作分类，低置信与易混淆样本进入人工复核。</p>
+          </div>
+          <div class="hero-orbit" aria-hidden="true">
+            <div class="orbit-ring r1"></div><div class="orbit-ring r2"></div>
+            <div class="orbit-core">AI</div><span class="orbit-node n1">Pose</span><span class="orbit-node n2">GCN</span><span class="orbit-node n3">Review</span>
+          </div>
+        </div>
+        <div class="metric-grid" id="metrics"></div>
+        <div class="two-column">
+          <article class="panel"><div class="panel-head"><div><span class="panel-kicker">DATA BALANCE</span><h3>六分类数据分布</h3></div><button class="text-button" data-goto="dataset">查看数据集 →</button></div><div id="label-chart" class="bar-chart"></div></article>
+          <article class="panel"><div class="panel-head"><div><span class="panel-kicker">PIPELINE</span><h3>能力状态</h3></div></div><div id="capability-list" class="capability-list"></div></article>
+        </div>
+        <article class="panel"><div class="panel-head"><div><span class="panel-kicker">RECENT TASKS</span><h3>最近处理任务</h3></div></div><div id="recent-jobs" class="job-list empty-state">暂无运行任务</div></article>
+      </section>
+
+      <section class="page" id="page-inference">
+        <div class="toolbar panel compact">
+          <div class="sample-browser">
+            <label>选择任意服务器样本</label>
+            <button class="sample-tree-toggle" id="sample-tree-toggle" type="button" aria-expanded="false"><span id="sample-tree-current">请选择服务器样本</span><i>⌄</i></button>
+            <div class="sample-tree-menu hidden" id="sample-tree-menu"><div id="sample-tree-groups" class="sample-tree-groups"></div></div>
+          </div>
+          <label class="inference-search"><span>搜索服务器样本</span><input id="inference-search" placeholder="样本 ID、来源或原类别"></label>
+          <div class="toolbar-spacer"></div>
+          <label class="upload-button">上传到服务器<input id="video-upload" type="file" accept="video/*,.avi" hidden></label>
+          <button class="button secondary" id="run-preview">生成预览</button>
+          <button class="button secondary" id="run-pose">提取骨架</button>
+          <button class="button primary" id="run-full">运行完整推理</button>
+        </div>
+        <div id="inference-job" class="job-progress hidden"><div><span></span></div><p></p></div>
+        <div class="workbench-layout">
+          <div class="inspection-workspace">
+            <div class="video-grid workbench-videos">
+              <article class="panel video-panel"><div class="panel-head"><div><span class="panel-kicker">SOURCE VIDEO</span><h3>原始视频</h3></div><span class="artifact-tag" id="source-status">未选择</span></div><div class="video-frame"><video id="source-video" controls loop playsinline></video><div class="video-placeholder">请选择一个视频样本</div></div></article>
+              <article class="panel video-panel"><div class="panel-head"><div><span class="panel-kicker">POSE ONLY</span><h3>NTU25 骨架</h3></div><span class="artifact-tag" id="pose-status">未生成</span></div><div class="video-frame pose"><video id="pose-video" controls loop playsinline></video><div class="video-placeholder">运行骨架提取后显示</div></div></article>
+            </div>
+
+            <article class="panel evidence-panel">
+              <div class="panel-head"><div><span class="panel-kicker">STUDENT EVIDENCE</span><h3>ProtoGCN Top-5</h3></div><span class="model-chip">NTU120 · Bone</span></div>
+              <div id="prediction-list" class="prediction-list empty-state">尚无预测结果</div>
+              <div id="student-evidence" class="evidence-details hidden"></div>
+              <div class="warning-note">当前官方权重用于 NTU120 工程联调；提交审核时会固化当前 Top-5、权重哈希和任务状态。</div>
+            </article>
+
+            <article class="panel teacher-panel disabled-region">
+              <div class="panel-head"><div><span class="panel-kicker">SEMANTIC TEACHER</span><h3>大模型语义分析</h3></div><span id="teacher-status" class="status-pill disabled">尚未启用</span></div>
+              <div id="teacher-result" class="teacher-placeholder">
+                <div class="teacher-icon">◇</div>
+                <div><strong>Qwen 多模态语义教师</strong><p>启用后展示当前闭集标签建议、置信度、关键证据片段、交互关系和简短判定依据。</p></div>
+              </div>
+              <button class="button disabled" id="run-teacher" disabled>运行大模型分析</button>
+            </article>
+
+          </div>
+
+          <aside class="panel label-panel decision-panel">
+            <div class="decision-section-title">校园行为六分类</div>
+            <div id="label-buttons" class="label-grid"></div>
+            <div class="decision-section-title special-title">特殊审核结果</div>
+            <div class="special-actions"><button data-special="unknown">无法判断</button><button data-special="damaged">视频损坏</button><button data-special="out_of_scope">无关样本</button></div>
+            <label class="note-field"><span>审核备注（可选）</span><textarea id="review-note" rows="4" placeholder="例如：双方有明显防御性后退，接触力度较大"></textarea></label>
+            <div class="review-actions stacked-actions"><button class="button ghost" id="undo-review">撤销最近审核</button><button class="button secondary" id="previous-review">← 上一个</button><button class="button primary" id="next-review">下一个 →</button></div>
+          </aside>
+          </div>
+      </section>
+
+      <section class="page" id="page-dataset">
+        <div class="toolbar panel compact">
+          <div class="stat-inline"><strong id="dataset-total">0</strong><span>服务器样本</span></div>
+          <select id="dataset-source"><option value="all">全部来源</option></select>
+          <select id="dataset-status"><option value="all">全部状态</option><option value="pending">待审核</option><option value="reviewed">已标注</option><option value="unknown">无法判断</option><option value="damaged">损坏</option><option value="out_of_scope">无关</option></select>
+          <input id="dataset-search" class="wide-search" placeholder="搜索 ID、来源标签或路径">
+          <div class="toolbar-spacer"></div><button class="button primary" id="export-dataset">导出审核清单</button>
+        </div>
+        <article class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>样本</th><th>来源</th><th>原类别</th><th>候选标签</th><th>人工标签</th><th>状态</th><th>操作</th></tr></thead><tbody id="dataset-table"></tbody></table></div><div class="pagination"><button id="page-prev">←</button><span id="page-info">第 1 页</span><button id="page-next">→</button></div></article>
+      </section>
+
+      <section class="page" id="page-evolution">
+        <div class="page-intro"><div><span class="panel-kicker">SELF-EVOLUTION LOOP</span><h2>数据闭环中心</h2><p>自动收集 NTU120 伪标签、挖掘难例，并在满足触发与验证门槛后训练和发布。</p></div></div>
+        <div id="pipeline-flow" class="pipeline-flow"></div>
+        <div class="two-column">
+          <article class="panel">
+            <div class="panel-head"><h3>教师、伪标签与难例</h3><span id="evolution-status" class="status-pill disabled">正在读取</span></div>
+            <p class="muted">Qwen 的 NTU120 结果经过教师置信度、学生一致性、姿态质量和时序稳定性联合筛选；复核样本自动进入审核队列。</p>
+            <div id="evolution-counts" class="settings-grid evolution-summary"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><h3>NTU120 蒸馏、验证与发布</h3><button id="run-evolution" class="button secondary">立即扫描</button></div>
+            <p class="muted">训练始终从当前线上权重快照开始。候选模型只有通过同一验证集指标和 50 MiB 大小门槛后才会替换推理权重。</p>
+            <pre id="evolution-training">正在读取自动闭环状态</pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="page" id="page-models">
+        <div class="page-intro"><div><span class="panel-kicker">MODEL REGISTRY</span><h2>模型与能力</h2><p>清晰区分当前联调模型与尚未生成的校园六分类模型。</p></div></div>
+        <div id="model-grid" class="model-grid"></div>
+      </section>
+
+      <section class="page" id="page-settings">
+        <div class="page-intro"><div><span class="panel-kicker">SERVER CONFIGURATION</span><h2>服务器配置</h2><p>这些目录全部位于后端服务器，本地浏览器不保存项目数据。</p></div></div>
+        <article class="panel settings-panel gpu-settings-panel">
+          <div class="panel-head">
+            <div><span class="panel-kicker">DEVICE SCHEDULING</span><h3>推理设备调度</h3><p class="muted">MediaPipe 固定使用 CPU；在这里选择 ProtoGCN 可使用的 GPU，多卡池按任务轮询分配。</p></div>
+            <div class="gpu-actions"><span id="gpu-status" class="status-pill disabled">正在检测</span><button id="refresh-gpus" class="button secondary">刷新状态</button></div>
+          </div>
+          <div id="gpu-grid" class="gpu-grid"></div>
+          <div class="gpu-settings-foot">
+            <p id="gpu-help" class="muted"></p>
+            <button id="save-gpu-settings" class="button primary">保存 GPU 设置</button>
+          </div>
+        </article>
+        <article class="panel settings-panel"><div id="system-paths" class="settings-grid"></div></article>
+        <article class="panel"><div class="panel-head"><h3>环境配置提示</h3></div><pre id="environment-help"></pre></article>
+      </section>
+    </main>
+  </div>
+  <div id="toast-root"></div>
+  <script src="/app.js?v=20260803-job-dedup1" defer></script>
+</body>
+</html>

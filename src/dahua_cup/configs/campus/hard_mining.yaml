@@ -1,0 +1,26 @@
+schema_version: hard_mining.v1
+
+selection:
+  minimum_score: 0.25
+  limit: 2000
+  per_class_limit: 300
+  rare_class_quantile: 0.25
+  reason_threshold: 0.60
+
+weights:
+  before_teacher:
+    student_entropy: 0.35
+    margin_uncertainty: 0.20
+    temporal_instability: 0.15
+    quality_failure: 0.10
+    novelty: 0.10
+    rare_class: 0.10
+  after_teacher:
+    student_entropy: 0.25
+    margin_uncertainty: 0.10
+    student_teacher_disagreement: 0.25
+    temporal_instability: 0.10
+    quality_failure: 0.05
+    novelty: 0.05
+    rare_class: 0.10
+    rule_conflict: 0.10

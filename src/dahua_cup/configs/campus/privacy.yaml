@@ -1,0 +1,5 @@
+mode: pose_only
+allow_rgb_fallback: false
+blur_faces_before_teacher: true
+raw_video_retention_hours: 0
+teacher_artifact_retention_days: 30

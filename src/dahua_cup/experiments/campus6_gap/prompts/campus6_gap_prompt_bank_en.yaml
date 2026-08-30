@@ -1,0 +1,13 @@
+{
+  "version": "campus6_gap_v3_user_reviewed",
+  "language": "en",
+  "notes": "English, semantically exact translation of the user-reviewed skeleton descriptions. Fixed order: normal_walk, normal_run, playful_chase, playful_push, conflict_chase, conflict_push.",
+  "classes": [
+    {"id": 0, "label": "normal_walk", "global": "a person walking", "synonyms": ["walking", "one person walking"], "head": "head moves with body direction", "arms": "arms swing alternately forward and backward with low amplitude and small elbow bending", "torso": "torso translates steadily forward", "legs": "legs step alternately with short strides and small knee bending"},
+    {"id": 1, "label": "normal_run", "global": "a person running", "synonyms": ["running", "one person running"], "head": "head moves with body direction", "arms": "arms swing quickly forward and backward with clear elbow bending", "torso": "torso leans and translates quickly forward", "legs": "legs stride quickly in alternation with clear knee bending"},
+    {"id": 2, "label": "playful_chase", "global": "two people running", "synonyms": ["two persons running", "two people in motion"], "head": "no fixed motion pattern", "arms": "no fixed motion pattern", "torso": "no fixed motion pattern", "legs": "no fixed motion pattern"},
+    {"id": 3, "label": "playful_push", "global": "two people make contact", "synonyms": ["two persons make contact", "contact between two people"], "head": "heads remain near the interacting torsos", "arms": "no fixed motion pattern", "torso": "the two torsos do not move clearly farther apart", "legs": "feet make small adjustments for balance"},
+    {"id": 4, "label": "conflict_chase", "global": "one person runs quickly behind another person", "synonyms": ["a person rapidly follows another person from behind", "two people running with one behind the other"], "head": "no fixed motion pattern", "arms": "no fixed motion pattern", "torso": "the distance between the two people changes quickly", "legs": "no fixed motion pattern"},
+    {"id": 5, "label": "conflict_push", "global": "two people make contact and the distance between them changes substantially", "synonyms": ["two persons make contact followed by a large distance change", "contact between two people with large relative displacement"], "head": "no fixed motion pattern", "arms": "no fixed motion pattern", "torso": "after contact the distance between the two people changes substantially", "legs": "no fixed motion pattern"}
+  ]
+}

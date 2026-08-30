@@ -1,0 +1,44 @@
+# Render with scripts/render_config.py.  No concrete data path is stored here.
+work_dir: ${CAMPUS6_CTR_WORK_DIR}
+weights: ${CAMPUS6_CTR_PRETRAINED}
+ignore_weights: [fc]
+feeder: feeders.feeder_ntu.Feeder
+train_feeder_args:
+  data_path: ${CAMPUS6_CTR_DATA}
+  split: train
+  window_size: 64
+  random_rot: true
+  p_interval: [0.5, 1]
+  vel: false
+  bone: false
+test_feeder_args:
+  data_path: ${CAMPUS6_CTR_DATA}
+  split: val
+  window_size: 64
+  p_interval: [0.95]
+  vel: false
+  bone: false
+model: model.ctrgcn.Model
+model_args:
+  num_class: 6
+  num_point: 25
+  num_person: 2
+  graph: graph.ntu_rgb_d.Graph
+  graph_args: {labeling_mode: spatial}
+  drop_out: 0.2
+loss_type: ce
+use_language: false
+optimizer: SGD
+base_lr: 0.003
+weight_decay: 0.0005
+nesterov: true
+step: [30, 45]
+lr_decay_rate: 0.1
+warm_up_epoch: 3
+num_epoch: 60
+batch_size: 32
+test_batch_size: 64
+num_worker: 4
+eval_interval: 5
+save_interval: 5
+seed: 2026

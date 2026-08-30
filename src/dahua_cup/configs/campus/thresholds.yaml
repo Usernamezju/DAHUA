@@ -1,0 +1,15 @@
+pose:
+  keypoint_score: 0.2
+  minimum_coverage: 0.70
+pseudo_label:
+  accept_score: 0.85
+  review_score: 0.55
+  high_confidence: 0.80
+  accepted_audit_rate: 0.10
+  rare_class_audit_rate: 0.20
+  weights:
+    llm_consistency: 0.30
+    teacher_probability: 0.25
+    student_teacher_agreement: 0.20
+    pose_quality: 0.15
+    temporal_stability: 0.10

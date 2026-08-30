@@ -1,0 +1,15 @@
+schema_version: teacher_routing.v1
+
+routing:
+  confidence_threshold: 0.70
+  margin_threshold: 0.15
+  pose_quality_threshold: 0.70
+  instability_threshold: 0.60
+  teacher_conflict_confidence: 0.70
+
+review_priority:
+  student_teacher_conflict: 1000000
+  pose_quality_failure: 900000
+  student_instability: 800000
+  teacher_requested_review: 750000
+  uncertain_teacher_unavailable: 700000

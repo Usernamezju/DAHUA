@@ -1,0 +1,6 @@
+normal_walk
+normal_run
+playful_chase
+playful_push
+conflict_chase
+conflict_push
