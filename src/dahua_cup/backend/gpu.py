@@ -49,6 +49,7 @@ class GPUManager:
         self.path = Path(path)
         self._lock = threading.Lock()
         self._leases: Dict[str, Dict[int, int]] = {"pose": {}, "student": {}}
+        self._teacher_active_ids: List[int] = []
         self._selection = self._load()
 
     @staticmethod
@@ -56,6 +57,7 @@ class GPUManager:
         shared = os.environ.get("DAHUA_INFERENCE_GPUS", "0")
         pose = os.environ.get("DAHUA_RTMPOSE_GPUS", shared)
         student = os.environ.get("DAHUA_PROTOGCN_GPUS", shared)
+        teacher = os.environ.get("DAHUA_QWEN_GPUS", "")
 
         def parse(value: str) -> List[int]:
             parts = [part.strip() for part in value.split(",") if part.strip()]
@@ -64,6 +66,8 @@ class GPUManager:
         return {
             "pose_gpu_ids": parse(pose),
             "student_gpu_ids": parse(student),
+            "teacher_mode": "manual" if teacher.strip() else "auto",
+            "teacher_gpu_ids": parse(teacher) if teacher.strip() else [],
         }
 
     def _load(self) -> dict:
@@ -78,11 +82,21 @@ class GPUManager:
             student = _unique_gpu_ids(
                 value.get("student_gpu_ids", defaults["student_gpu_ids"])
             )
+            teacher_mode = str(
+                value.get("teacher_mode", defaults["teacher_mode"])
+            )
+            teacher = _unique_gpu_ids(
+                value.get("teacher_gpu_ids", defaults["teacher_gpu_ids"])
+            )
+            if teacher_mode not in {"auto", "manual"}:
+                teacher_mode = "auto"
             return {
                 # Upgrade the old CPU-pose settings file without requiring an
                 # operator to open the settings page first.
                 "pose_gpu_ids": pose or defaults["pose_gpu_ids"],
                 "student_gpu_ids": student or defaults["student_gpu_ids"],
+                "teacher_mode": teacher_mode,
+                "teacher_gpu_ids": teacher,
             }
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return defaults
@@ -109,17 +123,38 @@ class GPUManager:
     def state(self) -> dict:
         gpus = self.discover()
         available_ids = {gpu["index"] for gpu in gpus}
+        with self._lock:
+            pose_leases = dict(self._leases["pose"])
+            student_leases = dict(self._leases["student"])
+            teacher_active = set(self._teacher_active_ids)
+        for gpu in gpus:
+            gpu_id = gpu["index"]
+            roles = []
+            if pose_leases.get(gpu_id, 0):
+                roles.append("RTMDet/RTMPose")
+            if student_leases.get(gpu_id, 0):
+                roles.append("M1FKD")
+            if gpu_id in teacher_active:
+                roles.append("Qwen3-VL-8B")
+            gpu["service_roles"] = roles
+            gpu["service_busy"] = bool(roles)
         return {
             "available": bool(gpus),
             "gpus": gpus,
             "pose_gpu_ids": list(self._selection["pose_gpu_ids"]),
             "student_gpu_ids": list(self._selection["student_gpu_ids"]),
+            "teacher_mode": self._selection["teacher_mode"],
+            "teacher_gpu_ids": list(self._selection["teacher_gpu_ids"]),
             "unavailable_pose_gpu_ids": sorted(
                 set(self._selection["pose_gpu_ids"]) - available_ids
             ),
             "unavailable_student_gpu_ids": sorted(
                 set(self._selection["student_gpu_ids"]) - available_ids
             ),
+            "unavailable_teacher_gpu_ids": sorted(
+                set(self._selection["teacher_gpu_ids"]) - available_ids
+            ),
+            "teacher_admission": self.teacher_availability(),
             "strategy": "least_loaded_then_lowest_utilization",
             "pose_runtime": "RTMDet/RTMPose on CUDA",
         }
@@ -138,11 +173,19 @@ class GPUManager:
         maximum_utilization = max(
             0, min(100, int(os.environ.get("DAHUA_QWEN_MAX_UTILIZATION", "10")))
         )
+        permitted = set(self._selection["teacher_gpu_ids"])
+        automatic = self._selection["teacher_mode"] == "auto"
         idle = [
             gpu for gpu in self.discover()
+            if (automatic or gpu["index"] in permitted)
             if gpu["memory_total_mb"] - gpu["memory_used_mb"] >= minimum_free
             and gpu["utilization_gpu_percent"] <= maximum_utilization
         ]
+        idle.sort(key=lambda gpu: (
+            gpu["utilization_gpu_percent"],
+            gpu["memory_used_mb"],
+            gpu["index"],
+        ))
         selected = [gpu["index"] for gpu in idle[:required]]
         return {
             "enabled": len(selected) == required,
@@ -151,6 +194,10 @@ class GPUManager:
             "minimum_free_memory_mb": minimum_free,
             "maximum_utilization_percent": maximum_utilization,
             "idle_gpu_ids": [gpu["index"] for gpu in idle],
+            "selection_mode": self._selection["teacher_mode"],
+            "permitted_gpu_ids": (
+                sorted(permitted) if not automatic else []
+            ),
         }
 
     @staticmethod
@@ -164,19 +211,34 @@ class GPUManager:
             "DAHUA_QWEN_GPU_IDS": visible,
         }
 
-    def update(self, pose_gpu_ids, student_gpu_ids) -> dict:
+    def update(
+        self,
+        pose_gpu_ids,
+        student_gpu_ids,
+        teacher_gpu_ids=None,
+        *,
+        teacher_auto: bool = True,
+    ) -> dict:
         pose = _unique_gpu_ids(pose_gpu_ids)
         student = _unique_gpu_ids(student_gpu_ids)
+        teacher = _unique_gpu_ids(teacher_gpu_ids or [])
         if not pose or not student:
             raise ValueError("RTMPose 和 ProtoGCN 都至少需要选择一张 GPU")
+        if not teacher_auto and not teacher:
+            raise ValueError("手动模式下，Qwen 至少需要选择一张候选 GPU")
         available = {gpu["index"] for gpu in self.discover()}
         if available:
-            invalid = (set(pose) | set(student)) - available
+            invalid = (set(pose) | set(student) | set(teacher)) - available
             if invalid:
                 raise ValueError("GPU 不存在或当前不可见：{}".format(
                     ", ".join(str(value) for value in sorted(invalid))
                 ))
-        selection = {"pose_gpu_ids": pose, "student_gpu_ids": student}
+        selection = {
+            "pose_gpu_ids": pose,
+            "student_gpu_ids": student,
+            "teacher_mode": "auto" if teacher_auto else "manual",
+            "teacher_gpu_ids": teacher,
+        }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         temporary.write_text(
@@ -188,6 +250,11 @@ class GPUManager:
             self._selection = selection
             self._leases = {"pose": {}, "student": {}}
         return self.state()
+
+    def set_teacher_active(self, gpu_ids) -> None:
+        """Expose the service-owned Qwen allocation in the monitoring API."""
+        with self._lock:
+            self._teacher_active_ids = _unique_gpu_ids(gpu_ids)
 
     def acquire_device(self, kind: str) -> int:
         """Lease the currently best GPU in the selected pool.

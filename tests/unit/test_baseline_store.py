@@ -34,4 +34,16 @@ def test_baseline_import_is_idempotent_and_preserves_later_review(tmp_path):
     sample = store.get_sample("campus6_0000_test")
     assert sample["manual_label"] == "normal_run"
     assert sample["reviewer"] == "reviewer-a"
+    assert store.count_incremental_samples(None) == 1
+    assert store.count_incremental_samples("9999-01-01T00:00:00+00:00") == 0
 
+
+def test_restart_marks_incomplete_jobs_failed(tmp_path):
+    store = ReviewStore(tmp_path / "review.sqlite3")
+    store.import_baseline_records([_record()])
+    job = store.create_job("campus6_0000_test", "teacher")
+    store.update_job(job["job_id"], status="running")
+    assert store.recover_incomplete_jobs() == 1
+    recovered = store.get_job(job["job_id"])
+    assert recovered["status"] == "failed"
+    assert recovered["finished_at"]

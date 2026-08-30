@@ -350,6 +350,137 @@ class JobManager:
     def continuous_status(self) -> dict:
         return dict(self._continuous_status)
 
+    def model_status(self) -> dict:
+        """Summarize production/candidate lifecycle without exposing paths."""
+        checkpoint = self.settings.resolve_student_checkpoint()
+        generated_at = (
+            datetime.fromtimestamp(checkpoint.stat().st_mtime, timezone.utc).isoformat()
+            if checkpoint and checkpoint.is_file()
+            else None
+        )
+        metrics = (
+            self.baseline.evaluation_summary()
+            if self.baseline is not None and self.baseline.available
+            else None
+        )
+        registry_path = self.settings.runtime_root / "settings/model_registry.jsonl"
+        pointer_path = self.settings.runtime_root / "settings/production_pointer.json"
+        records = []
+        if registry_path.is_file():
+            for line in registry_path.read_text(encoding="utf-8").splitlines():
+                try:
+                    records.append(json.loads(line))
+                except (TypeError, ValueError):
+                    continue
+        latest = {}
+        for record in records:
+            if record.get("model_id"):
+                latest[str(record["model_id"])] = record
+        pointer = {}
+        if pointer_path.is_file():
+            try:
+                pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+            except (OSError, TypeError, ValueError):
+                pointer = {}
+        candidate_records = [
+            value for value in latest.values()
+            if value.get("status") in {"candidate", "validated", "archived"}
+        ]
+        candidate_records.sort(
+            key=lambda value: str(
+                value.get("updated_at") or value.get("created_at") or ""
+            ),
+            reverse=True,
+        )
+        previous_model_id = pointer.get("previous_model_id")
+        return {
+            "schema_version": "campus6_model_status.v1",
+            "production": {
+                "model_id": pointer.get("current_model_id") or "m1fkd-int8-campus6",
+                "name": "M1FKD INT8 Campus6",
+                "status": "production",
+                "generated_at": generated_at,
+                "deployed_at": (
+                    (pointer.get("history") or [{}])[-1].get("created_at")
+                    if pointer.get("history") else generated_at
+                ),
+                "size_mb": (
+                    checkpoint.stat().st_size / 1_000_000
+                    if checkpoint and checkpoint.is_file() else None
+                ),
+                "metrics": metrics,
+            },
+            "candidate": candidate_records[0] if candidate_records else None,
+            "lifecycle": ["candidate", "validated", "production"],
+            "rollback": {
+                "available": bool(previous_model_id),
+                "previous_model_id": previous_model_id,
+                "history_count": len(pointer.get("history") or []),
+            },
+        }
+
+    def incremental_training_status(self) -> dict:
+        """Read the auditable trainer heartbeat and derive a truthful ETA."""
+        model = self.model_status()
+        production = model.get("production") or {}
+        last_training_at = production.get("generated_at")
+        status_path = (
+            self.settings.runtime_root / "settings/incremental_training.json"
+        )
+        value = {}
+        if status_path.is_file():
+            try:
+                value = json.loads(status_path.read_text(encoding="utf-8"))
+            except (OSError, TypeError, ValueError):
+                value = {"status": "failed", "message": "训练状态文件无法读取"}
+        status = str(value.get("status") or "idle")
+        if status not in {"idle", "running", "completed", "failed"}:
+            status = "failed"
+        running = status == "running"
+        pid = value.get("pid")
+        if running and pid:
+            try:
+                os.kill(int(pid), 0)
+            except (OSError, TypeError, ValueError):
+                running = False
+                status = "failed"
+                value["message"] = "训练进程已结束，但未写入完成状态"
+        try:
+            progress = max(0.0, min(1.0, float(value.get("progress", 0.0))))
+        except (TypeError, ValueError):
+            progress = 0.0
+        remaining = value.get("estimated_remaining_seconds")
+        if running and remaining is None and value.get("estimated_total_seconds"):
+            try:
+                started = datetime.fromisoformat(
+                    str(value["started_at"]).replace("Z", "+00:00")
+                )
+                elapsed = max(
+                    0.0,
+                    (datetime.now(timezone.utc) - started).total_seconds(),
+                )
+                remaining = max(
+                    0,
+                    int(float(value["estimated_total_seconds"]) - elapsed),
+                )
+            except (KeyError, TypeError, ValueError):
+                remaining = None
+        return {
+            "schema_version": "incremental_training_status.v1",
+            "status": status,
+            "running": running,
+            "stage": value.get("stage") or ("waiting_for_data" if not running else "train"),
+            "progress": progress,
+            "started_at": value.get("started_at"),
+            "updated_at": value.get("updated_at"),
+            "last_training_at": last_training_at,
+            "new_sample_count": self.store.count_incremental_samples(
+                last_training_at
+            ),
+            "estimated_remaining_seconds": remaining if running else None,
+            "message": value.get("message") or "",
+        }
+
     def _continuous_loop(self) -> None:
         self._continuous_status["state"] = "running"
         while not self._continuous_stop.is_set():
@@ -388,6 +519,27 @@ class JobManager:
                     self._continuous_status["last_error"] = ""
                     submitted = True
                     break
+                with self.gpu_condition:
+                    teacher_busy = self.teacher_active or self.teacher_waiting
+                if (
+                    not submitted
+                    and self.baseline is not None
+                    and not teacher_busy
+                ):
+                    capability = self.capability_state()["qwen_teacher"]
+                    if capability["enabled"]:
+                        for item in self.hard_samples(limit=50)["items"]:
+                            if item.get("teacher", {}).get("status") != "not_run":
+                                continue
+                            sample_id = item["sample_id"]
+                            with self.submission_lock:
+                                if sample_id in self.active_sample_jobs:
+                                    continue
+                            self.submit(sample_id, "teacher")
+                            self._continuous_status["last_sample_id"] = sample_id
+                            self._continuous_status["last_error"] = ""
+                            submitted = True
+                            break
                 self._continuous_stop.wait(2 if submitted else 20)
             except Exception as exc:
                 self._continuous_status["last_error"] = f"{type(exc).__name__}: {exc}"
@@ -493,6 +645,7 @@ class JobManager:
         if unavailable:
             raise ValueError("；".join(unavailable))
         if action == "teacher":
+            self.materialize_baseline_inputs(sample_id)
             paths = self.artifacts(sample_id)
             if not paths["feature"].is_file() or not paths["pose_video"].is_file():
                 raise ValueError("请先运行骨架提取并生成骨架视频")
@@ -592,11 +745,19 @@ class JobManager:
             message="任务已启动", started_at=_now(),
         )
         try:
-            video = Path(sample["video_path"])
-            if not video.is_file():
-                raise FileNotFoundError(f"视频不存在：{video}")
-            if not self.settings.video_path_is_allowed(video):
-                raise PermissionError("视频必须位于服务器候选数据或 Web 上传目录内")
+            if action == "teacher":
+                # Qwen receives only the derived Skeleton video.
+                video = paths["pose_video"]
+                if not video.is_file():
+                    raise FileNotFoundError(f"骨架视频不存在：{video}")
+            else:
+                video = Path(sample["video_path"])
+                if not video.is_file():
+                    raise FileNotFoundError(f"视频不存在：{video}")
+                if not self.settings.video_path_is_allowed(video):
+                    raise PermissionError(
+                        "视频必须位于服务器候选数据或 Web 上传目录内"
+                    )
             if action in {"pose", "full"}:
                 self.store.update_job(
                     job_id,
@@ -769,7 +930,11 @@ class JobManager:
                         self.settings.student_instability_threshold
                     ),
                 )
+                gate = self._boolean_teacher_gate(prediction, gate)
                 gate["pose_metrics"] = pose_metrics
+                gate["confidence_method"] = (
+                    "validation_temperature_scaled_int8_softmax"
+                )
                 teacher_command_available = bool(
                     self.capability_state()["qwen_teacher"]["enabled"]
                 )
@@ -936,6 +1101,34 @@ class JobManager:
         )
         temporary.replace(path)
 
+    def _boolean_teacher_gate(self, prediction: dict, gate: dict) -> dict:
+        """Route Qwen only from the five declared hard-sample conditions."""
+        from dahua_cup.backend.hard_samples import evaluate_hard_sample
+
+        value = dict(prediction)
+        value["teacher_gate"] = gate
+        decision = evaluate_hard_sample(
+            value,
+            None,
+            margin_threshold=self.settings.teacher_trigger_margin,
+            conflict_confidence_threshold=self.settings.teacher_conflict_confidence,
+            instability_threshold=self.settings.student_instability_threshold,
+        )
+        trigger_codes = [
+            code
+            for code in decision["matched_conditions"]
+            if code in {"C1", "C4", "C5"}
+        ]
+        gate = dict(gate)
+        gate.update({
+            "triggered": bool(trigger_codes),
+            "hard_sample": bool(trigger_codes),
+            "route": "call_teacher" if trigger_codes else "use_student",
+            "reasons": trigger_codes,
+            "hard_decision": decision,
+        })
+        return gate
+
     def _execute_teacher(
         self, sample_id: str, video: Path, paths: Dict[str, Path]
     ) -> str:
@@ -955,27 +1148,122 @@ class JobManager:
         teacher_command = render_command(
             self.settings.default_teacher_command(), **values
         )
-        admission = self.gpus.teacher_availability()
-        if not admission["enabled"]:
-            raise RuntimeError(
-                "Qwen GPU admission rejected: {} card(s) are required, idle GPUs are {}"
-                .format(admission["required_gpu_count"], admission["idle_gpu_ids"])
-            )
         with self.teacher_gpu_slot():
-            return self._execute(
-                teacher_command,
-                extra_env=self.gpus.teacher_process_environment(
-                    admission["gpu_ids"]
-                ),
-            )
+            admission = self.gpus.teacher_availability()
+            if not admission["enabled"]:
+                raise RuntimeError(
+                    "Qwen GPU admission rejected: {} card(s) are required, idle GPUs are {}"
+                    .format(
+                        admission["required_gpu_count"],
+                        admission["idle_gpu_ids"],
+                    )
+                )
+            self.gpus.set_teacher_active(admission["gpu_ids"])
+            try:
+                return self._execute(
+                    teacher_command,
+                    extra_env=self.gpus.teacher_process_environment(
+                        admission["gpu_ids"]
+                    ),
+                )
+            finally:
+                self.gpus.set_teacher_active([])
 
     def prediction(self, sample_id: str) -> Optional[dict]:
         path = self.artifacts(sample_id)["prediction"]
+        # Existing Campus6 source artifacts are authoritative.  A materialized
+        # JSON file may predate the current calibration or rarity metadata.
+        if self.baseline is not None and self.baseline.has(sample_id):
+            value = self.baseline.prediction(sample_id)
+            if value is not None:
+                value = dict(value)
+                pose_metrics = self.baseline.pose_metrics(sample_id)
+                gate = teacher_gate_decision(
+                    value,
+                    self.settings.teacher_trigger_confidence,
+                    margin_threshold=self.settings.teacher_trigger_margin,
+                    pose_quality=pose_metrics["quality"],
+                    pose_quality_threshold=self.settings.pose_quality_threshold,
+                    instability_score=None,
+                    instability_threshold=self.settings.student_instability_threshold,
+                )
+                gate = self._boolean_teacher_gate(value, gate)
+                gate["pose_metrics"] = pose_metrics
+                value["teacher_gate"] = gate
+                return value
         if path.is_file():
             return json.loads(path.read_text(encoding="utf-8"))
-        if self.baseline is not None:
-            return self.baseline.prediction(sample_id)
         return None
+
+    def hard_samples(self, *, limit: int = 100, offset: int = 0) -> dict:
+        """Return samples satisfying Hard(x)=C1 or C2 or C3 or C4 or C5."""
+        if self.baseline is None:
+            return {"total": 0, "items": []}
+        from dahua_cup.backend.hard_samples import evaluate_hard_sample
+
+        candidates = []
+        teacher_capability = self.capability_state()["qwen_teacher"]
+        for sample_id in self.baseline.sample_ids():
+            prediction = self.prediction(sample_id)
+            if prediction is None:
+                continue
+            teacher = self.teacher_state(
+                sample_id,
+                capability=teacher_capability,
+                prediction=prediction,
+            )
+            decision = evaluate_hard_sample(
+                prediction,
+                teacher,
+                margin_threshold=self.settings.teacher_trigger_margin,
+                conflict_confidence_threshold=(
+                    self.settings.teacher_conflict_confidence
+                ),
+                instability_threshold=self.settings.student_instability_threshold,
+            )
+            if not decision["is_hard"]:
+                continue
+            matched = set(decision["matched_conditions"])
+            # This tuple is a discrete queue order, never a hard score.
+            priority = (
+                "C3" in matched,
+                "C2" in matched,
+                len(matched),
+                "C1" in matched,
+                "C4" in matched,
+                "C5" in matched,
+            )
+            candidates.append(
+                (priority, sample_id, prediction, teacher, decision)
+            )
+
+        candidates.sort(
+            key=lambda item: tuple(-int(value) for value in item[0])
+            + (item[1],)
+        )
+        items = []
+        for _, sample_id, prediction, teacher, decision in candidates[
+            offset:offset + limit
+        ]:
+            try:
+                sample = self.store.get_sample(sample_id)
+            except KeyError:
+                continue
+            sample.pop("video_path", None)
+            sample.pop("hard_score", None)
+            sample.pop("quality_score", None)
+            items.append({
+                **sample,
+                "prediction": prediction,
+                "teacher": teacher,
+                "hard_decision": decision,
+                "matched_conditions": decision["matched_conditions"],
+                "matched_condition_count": decision[
+                    "matched_condition_count"
+                ],
+                "media": {"pose": f"/api/samples/{sample_id}/media/pose"},
+            })
+        return {"total": len(candidates), "items": items}
 
     def pose_video(self, sample_id: str) -> Optional[Path]:
         """Return a skeleton-only video, rendering existing poses if needed."""
@@ -985,6 +1273,24 @@ class JobManager:
         if self.baseline is not None and self.baseline.has(sample_id):
             return self.baseline.render_pose_video(sample_id, path)
         return None
+
+    def materialize_baseline_inputs(self, sample_id: str) -> Dict[str, Path]:
+        """Prepare worker files from existing poses without running RTMPose."""
+        paths = self.artifacts(sample_id)
+        if self.baseline is None or not self.baseline.has(sample_id):
+            return paths
+        self.baseline.materialize_feature(sample_id, paths["feature"])
+        self.baseline.render_pose_video(sample_id, paths["pose_video"])
+        prediction = self.prediction(sample_id)
+        if prediction is not None:
+            paths["prediction"].parent.mkdir(parents=True, exist_ok=True)
+            temporary = paths["prediction"].with_suffix(".json.tmp")
+            temporary.write_text(
+                json.dumps(prediction, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            temporary.replace(paths["prediction"])
+        return paths
 
     def student_snapshot(self, sample_id: str) -> dict:
         prediction = self.prediction(sample_id)
@@ -1035,10 +1341,16 @@ class JobManager:
             "error": latest.get("message", "") if status == "failed" else "",
         }
 
-    def teacher_state(self, sample_id: str) -> dict:
-        capability = self.capability_state()["qwen_teacher"]
+    def teacher_state(
+        self,
+        sample_id: str,
+        *,
+        capability: Optional[dict] = None,
+        prediction: Optional[dict] = None,
+    ) -> dict:
+        capability = capability or self.capability_state()["qwen_teacher"]
         sample = self.store.get_sample(sample_id)
-        prediction = self.prediction(sample_id) or {}
+        prediction = prediction or self.prediction(sample_id) or {}
         gate = prediction.get("teacher_gate") or {}
         latest = next(
             (
@@ -1053,6 +1365,17 @@ class JobManager:
         )
         if latest is not None and latest.get("status") in {"queued", "running", "failed"}:
             status = latest.get("status") or "unknown"
+            if (
+                status == "failed"
+                and latest.get("message")
+                == "视频必须位于服务器候选数据或 Web 上传目录内"
+            ):
+                return {
+                    "status": "not_run",
+                    "model": "Qwen3-VL-8B-Instruct",
+                    "reason": "教师骨架输入校验已更新，等待重新分析",
+                    "result": None,
+                }
             return {
                 "status": status,
                 "model": "Qwen3-VL-8B-Instruct",
@@ -1060,6 +1383,23 @@ class JobManager:
                 "result": None,
                 "job_id": latest.get("job_id"),
             }
+
+        path = self.artifacts(sample_id)["teacher"]
+        if path.is_file():
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError) as exc:
+                return {
+                    "status": "failed",
+                    "model": None,
+                    "reason": f"教师结果无法读取：{exc}",
+                    "result": None,
+                }
+            value.setdefault("status", "completed")
+            value.setdefault("model", None)
+            value.setdefault("result", None)
+            value["prediction_path"] = str(path)
+            return value
 
         if gate and not gate.get("teacher_called"):
             confidence = gate.get("student_confidence")
@@ -1075,8 +1415,12 @@ class JobManager:
                 )
                 status = "blocked_quality"
             elif gate.get("triggered"):
-                reason = "学生结果不确定，但 Qwen 当前未启用"
-                status = "not_enabled"
+                if capability["enabled"]:
+                    reason = "难例已进入 Qwen 队列，等待服务器 GPU 准入"
+                    status = "not_run"
+                else:
+                    reason = "学生结果不确定，但 Qwen 当前未启用"
+                    status = "not_enabled"
             else:
                 try:
                     confidence_value = float(confidence)
@@ -1099,23 +1443,6 @@ class JobManager:
                 "result": None,
                 "gate": gate,
             }
-
-        path = self.artifacts(sample_id)["teacher"]
-        if path.is_file():
-            try:
-                value = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError, TypeError) as exc:
-                return {
-                    "status": "failed",
-                    "model": None,
-                    "reason": f"教师结果无法读取：{exc}",
-                    "result": None,
-                }
-            value.setdefault("status", "completed")
-            value.setdefault("model", None)
-            value.setdefault("result", None)
-            value["prediction_path"] = str(path)
-            return value
 
         return {
             "status": "not_run" if capability["enabled"] else "not_enabled",

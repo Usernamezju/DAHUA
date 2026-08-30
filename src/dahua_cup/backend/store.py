@@ -803,6 +803,22 @@ class ReviewStore:
             )
         return self.get_job(job_id)
 
+    def recover_incomplete_jobs(self) -> int:
+        """Fail jobs orphaned by a previous Web process restart."""
+        finished_at = _now()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE jobs
+                SET status = 'failed',
+                    message = 'Web 服务重启，任务已安全中止',
+                    finished_at = ?
+                WHERE status IN ('queued', 'running')
+                """,
+                (finished_at,),
+            )
+            return int(cursor.rowcount)
+
     def update_job(self, job_id: str, **changes) -> dict:
         allowed = {"status", "progress", "message", "log_text", "started_at", "finished_at"}
         values = {key: value for key, value in changes.items() if key in allowed}
@@ -910,3 +926,24 @@ class ReviewStore:
                     row["student_top{}_score".format(index + 1)] = prediction.get("score", "")
                 writer.writerow(row)
         return output
+
+    def count_incremental_samples(self, since: Optional[str]) -> int:
+        """Count post-production human-confirmed Campus6 samples."""
+        placeholders = ",".join("?" for _ in LABELS)
+        values: List[object] = [*LABELS, "official_initial_annotation"]
+        time_clause = ""
+        if since:
+            time_clause = "AND reviews.created_at > ?"
+            values.append(since)
+        with self.connect() as connection:
+            return int(connection.execute(
+                f"""
+                SELECT COUNT(DISTINCT reviews.sample_id)
+                FROM reviews
+                WHERE reviews.reverted_at IS NULL
+                  AND reviews.final_label IN ({placeholders})
+                  AND reviews.reviewer != ?
+                  {time_clause}
+                """,
+                values,
+            ).fetchone()[0])

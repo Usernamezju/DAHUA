@@ -87,6 +87,19 @@ def summarize_pose_feature(sample_id: str, path: str | Path) -> dict:
         else:
             raise ValueError("pose feature is missing image_keypoint and keypoint")
 
+    return summarize_pose_arrays(sample_id, points, valid, fps=fps)
+
+
+def summarize_pose_arrays(
+    sample_id: str,
+    points: np.ndarray,
+    valid_mask: np.ndarray,
+    *,
+    fps: float = 10.0,
+) -> dict:
+    """Create the same measured semantic graph from existing pose arrays."""
+    points = np.asarray(points, dtype=np.float32)
+    valid = np.asarray(valid_mask, dtype=bool)
     if valid.ndim != 3 or points.shape[:3] != valid.shape or points.shape[-1] != 2:
         raise ValueError("pose feature keypoints and valid_mask have incompatible shapes")
     if not np.isfinite(fps) or fps <= 0 or valid.shape[1] == 0:

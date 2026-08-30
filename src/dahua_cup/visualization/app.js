@@ -14,8 +14,8 @@ const SAMPLE_STATUS_GROUPS = [
 ];
 
 const state = {
-  capabilities: {}, system: {}, gpus: {}, dashboard: {}, samples: [], reviewSamples: [],
-  evolution: {},
+  capabilities: {}, system: {}, gpus: {}, dashboard: {}, modelStatus: {}, trainingStatus: {}, samples: [], reviewSamples: [],
+  hardSamples: [], hardTotal: 0, hardSample: null,
   inferenceSample: null, reviewSample: null, reviewIndex: -1,
   activeJobId: null, jobSubmissionPending: false,
   datasetPage: 0, datasetPageSize: 50, datasetTotal: 0,
@@ -46,25 +46,11 @@ function toast(message, error = false) {
 
 function formatTime(value) {
   if (!value) return "—";
-  return new Date(value).toLocaleString("zh-CN", { hour12: false });
-}
-
-function projectPath(value) {
-  if (!value) return "—";
-  const root = String(state.system.repository_root || "").replace(/\/+$/, "");
-  const path = String(value);
-  if (root && (path === root || path.startsWith(`${root}/`))) {
-    return path === root ? "." : `./${path.slice(root.length + 1)}`;
-  }
-  const dataRoot = String(state.system.data_root || "").replace(/\/+$/, "");
-  if (dataRoot && (path === dataRoot || path.startsWith(`${dataRoot}/`))) {
-    return path === dataRoot ? "DAHUA_DATA_ROOT" : `DAHUA_DATA_ROOT/${path.slice(dataRoot.length + 1)}`;
-  }
-  return path;
+  return new Date(value).toLocaleString("zh-CN", { year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false });
 }
 
 function titleForStatus(status) {
-  return ({pending:"待审核",reviewed:"已标注",unknown:"无法判断",damaged:"损坏",out_of_scope:"无关",queued:"排队中",running:"处理中",completed:"完成",failed:"失败",skipped:"已跳过",blocked_quality:"骨架质量不足"})[status] || status;
+  return ({waiting_teacher:"等待大模型推理",waiting_human:"等待人工审核",complete:"完成",pending:"待审核",reviewed:"已标注",unknown:"无法判断",damaged:"损坏",out_of_scope:"无关",not_run:"等待分析",queued:"排队中",running:"处理中",completed:"完成",failed:"失败",skipped:"已跳过",blocked_quality:"骨架质量不足"})[status] || status;
 }
 
 function setSidebarCollapsed(collapsed) {
@@ -79,12 +65,13 @@ function setSidebarCollapsed(collapsed) {
 
 function setPage(page) {
   if (page === "review") page = "inference";
-  const titles = {dashboard:"运行总览",inference:"行为识别结果",reasoning:"语义理解与推理依据",privacy:"Skeleton 隐私模式",dataset:"审计记录",evolution:"闭环中心",models:"模型管理",settings:"系统设置"};
+  const titles = {dashboard:"运行总览",inference:"行为识别结果",hard:"难例分析",dataset:"审计记录",training:"增量训练",models:"模型管理",settings:"系统设置"};
   $$(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.page === page));
   $$(".page").forEach(item => item.classList.toggle("active", item.id === `page-${page}`));
   $("#page-title").textContent = titles[page];
   history.replaceState(null, "", `#${page}`);
   if (page === "dataset") loadDatasetPage();
+  if (page === "hard" && !state.hardSample && state.hardSamples.length) selectHardSample(state.hardSamples[0].sample_id);
 }
 
 function reviewer() {
@@ -105,17 +92,22 @@ async function fetchAllSamples(params = {}) {
   return items;
 }
 
+async function fetchAllHardSamples() {
+  const first=await api("/api/hard-samples?offset=0&limit=200"),items=[...first.items];
+  for(let offset=200;offset<first.total;offset+=200){items.push(...(await api(`/api/hard-samples?offset=${offset}&limit=200`)).items);}
+  return {total:first.total,items};
+}
+
 async function refreshAll(preserveSelection = true) {
   try {
-    const [capabilities, system, gpus, dashboard, evolution, samples, reviewSamples] = await Promise.all([
-      api("/api/capabilities"), api("/api/system"), api("/api/gpus"), api("/api/dashboard"),
-      Promise.resolve({enabled:false,status:"manual",reason:"Campus6 闭环由审核、伪标签和训练脚本按批次执行"}),
-      fetchAllSamples(), fetchAllSamples({status:"pending"}),
+    const [capabilities, system, gpus, dashboard, modelStatus, trainingStatus, samples, reviewSamples, hard] = await Promise.all([
+      api("/api/capabilities"), api("/api/system"), api("/api/gpus"), api("/api/dashboard"), api("/api/models/status"), api("/api/training/status"),
+      fetchAllSamples(), fetchAllSamples({status:"pending"}), fetchAllHardSamples(),
     ]);
-    Object.assign(state, {capabilities, system, gpus, dashboard, evolution, samples, reviewSamples});
+    Object.assign(state, {capabilities, system, gpus, dashboard, modelStatus, trainingStatus, samples, reviewSamples, hardSamples:hard.items, hardTotal:hard.total});
     $("#server-dot").classList.add("online");
     $("#server-label").textContent = "服务器在线";
-    renderDashboard(); renderCapabilities(); renderSampleOptions(); renderModels(); renderSettings(); renderPipeline(); renderEvolution();
+    renderDashboard(); renderCapabilities(); renderSampleOptions(); renderHardOptions(); renderModels(); renderTrainingStatus(); renderSettings();
     if (!preserveSelection || !state.inferenceSample) {
       if (samples.length) await selectInference(samples[0].sample_id, false);
     } else {
@@ -210,8 +202,7 @@ async function selectInference(sampleId) {
     setVideo($("#pose-video"), sample.artifacts.pose_video ? sample.media.pose : "");
     $("#pose-status").textContent = sample.artifacts.pose_video ? "已生成" : "未生成";
     renderPrediction(sample.prediction);
-    renderTeacher(sample.teacher, sample.pseudo_record);
-    renderReasoning(sample.teacher, sample.prediction);
+    renderTeacher(sample.teacher, sample.pseudo_record, sample.prediction, sample.difficulty_checks);
     $("#review-note").value = sample.note || "";
     const pendingItems = filteredReviewSamples();
     const queueIndex = pendingItems.findIndex(item => item.sample_id === sample.sample_id);
@@ -219,33 +210,29 @@ async function selectInference(sampleId) {
   } catch(error){ toast(error.message,true); }
 }
 
-function renderReasoning(teacher, prediction) {
-  const status=$("#reasoning-status"), summary=$("#reasoning-summary"), distribution=$("#reasoning-distribution"), reason=$("#reasoning-reason"), trigger=$("#reasoning-trigger");
-  if(!status||!summary||!distribution||!reason||!trigger)return;
-  const gate=prediction?.teacher_gate||{};
-  const result=teacher?.result;
-  if(result){
-    status.className="status-pill online";status.textContent="教师分析完成";
-    summary.className="teacher-result";
-    summary.innerHTML=`<div><span>最终建议</span><strong>${escapeHtml(LABEL_NAME[result.label]||result.label||"—")}</strong></div><div><span>置信度</span><strong>${result.confidence==null?"—":`${(result.confidence*100).toFixed(1)}%`}</strong></div>`;
-    const values=Array.isArray(result.distribution)
-      ? Object.fromEntries(result.distribution.map(item=>[item.label,Number(item.probability)||0]))
-      : (result.distribution||{});
-    distribution.className="prediction-list";
-    distribution.innerHTML=LABELS.map(([id,name],index)=>`<div class="prediction-row"><span class="rank">${index+1}</span><span>${name}</span><div class="score-track"><span style="width:${Math.max(1,(values[id]||0)*100)}%"></span></div><strong>${((values[id]||0)*100).toFixed(1)}%</strong></div>`).join("");
-    reason.textContent=result.reason||result.reasoning_summary||"教师未返回文字依据";
-  }else{
-    const skipped=teacher?.status==="skipped";
-    status.className="status-pill disabled";status.textContent=skipped?"学生结果已接受":titleForStatus(teacher?.status||"pending");
-    summary.className="teacher-placeholder";summary.textContent=teacher?.reason||"后台尚未产生教师结果";
-    distribution.className="prediction-list empty-state";distribution.textContent="尚无教师分布";
-    reason.textContent=skipped?"学生置信度与类别间隔达到自动接受阈值，无需调用教师。":"尚无语义判断依据";
-  }
-  trigger.textContent=JSON.stringify({route:gate.route||"pending",reasons:gate.reasons||[],student_confidence:gate.student_confidence??null,top1_top2_margin:gate.top1_top2_margin??null,pose_quality:gate.pose_metrics?.quality??null},null,2);
+function distributionValues(value) {
+  if (Array.isArray(value)) return Object.fromEntries(value.map(item=>[item.label, Number(item.probability ?? item.score)||0]));
+  return value || {};
 }
 
-function renderTeacher(teacher, pseudoRecord = null) {
-  const status = $("#teacher-status"), root = $("#teacher-result");
+function renderSixDistribution(root, value, emptyText="尚无六类分布") {
+  if (!root) return;
+  const values=distributionValues(value);
+  if(!Object.keys(values).length){root.className="prediction-list empty-state";root.textContent=emptyText;return;}
+  root.className="prediction-list";
+  root.innerHTML=LABELS.map(([id,name],index)=>`<div class="prediction-row"><span class="rank">${index+1}</span><span>${name}</span><div class="score-track"><span style="width:${Math.max(1,(values[id]||0)*100)}%"></span></div><strong>${((values[id]||0)*100).toFixed(1)}%</strong></div>`).join("");
+}
+
+function renderDifficultyChecks(checks) {
+  const marks={yes:["✓","满足难例条件"],no:["×","不满足"],pending:["?","尚未获得所需结果"]};
+  return (checks||[]).map(check=>{const [mark,hint]=marks[check.status]||marks.pending;return `<li class="difficulty-check ${check.status}"><span>${escapeHtml(check.label)}</span><b title="${hint}">${mark}</b></li>`}).join("");
+}
+
+function renderTeacher(teacher, pseudoRecord = null, prediction = null, difficultyChecks = []) {
+  const status = $("#teacher-status"), root = $("#teacher-result"), distribution=$("#teacher-distribution"), collaboration=$("#collaboration-evidence");
+  if(collaboration){
+    collaboration.innerHTML=`<section><strong>五项协同判定</strong><ul class="difficulty-check-list">${renderDifficultyChecks(difficultyChecks)}</ul></section>`;
+  }
   if (teacher?.status === "completed" && teacher.result) {
     status.className = "status-pill online";
     status.textContent = "分析完成";
@@ -255,6 +242,7 @@ function renderTeacher(teacher, pseudoRecord = null) {
     const evidence = (result.evidence || []).map(item => `<li>${escapeHtml(item.description || item.type || "未提供描述")}${item.segment_id ? ` <code>${escapeHtml(item.segment_id)}</code>` : ""}</li>`).join("");
     const counterEvidence = (result.counter_evidence || []).map(item => `<li>${escapeHtml(item)}</li>`).join("");
     root.innerHTML = `<div><span>建议类别</span><strong>${escapeHtml(LABEL_NAME[label] || label || "—")}</strong></div><div><span>置信度</span><strong>${result.confidence == null ? "—" : `${(result.confidence * 100).toFixed(1)}%`}</strong></div><p>${escapeHtml(result.reason || result.reasoning_summary || "暂无判定依据")}</p>${evidence ? `<section class="teacher-evidence"><strong>教师依据</strong><ul>${evidence}</ul></section>` : ""}${counterEvidence ? `<section class="teacher-evidence counter"><strong>反向依据／限制</strong><ul>${counterEvidence}</ul></section>` : ""}`;
+    renderSixDistribution(distribution,result.distribution,"尚无教师六类分布");
     return;
   }
   if (pseudoRecord?.sample_id) {
@@ -263,6 +251,7 @@ function renderTeacher(teacher, pseudoRecord = null) {
     root.className = "teacher-result";
     const conflicts = (pseudoRecord.conflicts || []).join("、") || "质量分处于人工复核区间";
     root.innerHTML = `<div><span>建议类别</span><strong>${escapeHtml(LABEL_NAME[pseudoRecord.label] || pseudoRecord.label || "—")}</strong></div><div><span>质量分</span><strong>${pseudoRecord.quality_score == null ? "—" : `${(pseudoRecord.quality_score * 100).toFixed(1)}%`}</strong></div><p>${escapeHtml(conflicts)}</p>`;
+    renderSixDistribution(distribution,pseudoRecord.distribution,"尚无教师六类分布");
     return;
   }
   const running = ["queued","running"].includes(teacher?.status);
@@ -272,19 +261,57 @@ function renderTeacher(teacher, pseudoRecord = null) {
   status.textContent = running ? titleForStatus(teacher.status) : blockedQuality ? "骨架质量不足" : skipped ? "学生高置信，已跳过" : teacher?.status === "failed" ? "分析失败" : teacher?.status === "not_run" ? "尚未运行" : "尚未启用";
   root.className = "teacher-placeholder";
   root.innerHTML = `<div class="teacher-icon">◇</div><div><strong>${running ? "Qwen 多模态教师正在分析" : blockedQuality ? "骨架质量门控未调用 Qwen" : skipped ? "难例门控未调用 Qwen" : "Qwen 多模态教师"}</strong><p>${escapeHtml(teacher?.reason || "读取骨架视频，并在当前模型对应的标签空间内给出独立判断。")}</p></div>`;
+  renderSixDistribution(distribution,null,"尚无教师六类分布");
 }
 
 function renderPrediction(prediction) {
-  const root=$("#prediction-list"), evidenceRoot=$("#student-evidence");
-  if(!prediction?.topk?.length){root.className="prediction-list empty-state";root.textContent="尚无预测结果";evidenceRoot.classList.add("hidden");evidenceRoot.innerHTML="";return;}
+  const root=$("#prediction-list");
+  if(!prediction?.topk?.length){root.className="prediction-list empty-state";root.textContent="尚无预测结果";return;}
   root.className="prediction-list";
-  root.innerHTML=prediction.topk.map((item,index)=>`<div class="prediction-row"><span class="rank">${index+1}</span><span>${escapeHtml(item.label)}</span><div class="score-track"><span style="width:${Math.max(1,item.score*100)}%"></span></div><strong>${(item.score*100).toFixed(1)}%</strong></div>`).join("");
-  const studentEvidence = prediction.student_evidence;
-  if(!studentEvidence?.evidence?.length){evidenceRoot.classList.add("hidden");evidenceRoot.innerHTML="";return;}
-  const measured = studentEvidence.evidence.map(item => `<li>${escapeHtml(item.description || item.type || "未提供依据")}</li>`).join("");
-  const limitations = (studentEvidence.limitations || []).map(item => `<li>${escapeHtml(item.description || item.code || "未提供限制")}</li>`).join("");
-  evidenceRoot.classList.remove("hidden");
-  evidenceRoot.innerHTML = `<section><strong>小模型决策与骨架测量依据</strong><ul>${measured}</ul></section>${limitations ? `<section class="evidence-limitations"><strong>质量限制</strong><ul>${limitations}</ul></section>` : ""}`;
+  root.innerHTML=prediction.topk.map((item,index)=>`<div class="prediction-row"><span class="rank">${index+1}</span><span>${escapeHtml(LABEL_NAME[item.label]||item.label)}</span><div class="score-track"><span style="width:${Math.max(1,item.score*100)}%"></span></div><strong>${(item.score*100).toFixed(1)}%</strong></div>`).join("");
+}
+
+function renderHardOptions() {
+  const select=$("#hard-sample-select");if(!select)return;
+  $("#hard-total").textContent=state.hardTotal||0;
+  $("#hard-badge").textContent=state.hardTotal||0;
+  const current=state.hardSample?.sample_id||select.value;
+  select.innerHTML=state.hardSamples.length
+    ? state.hardSamples.map((item,index)=>`<option value="${escapeHtml(item.sample_id)}">#${index+1} · ${escapeHtml(item.sample_id)} · 命中 ${item.matched_condition_count||0} 项</option>`).join("")
+    : '<option value="">当前没有命中条件的难例</option>';
+  if(state.hardSamples.some(item=>item.sample_id===current))select.value=current;
+}
+
+function renderHardTeacher(teacher) {
+  const status=$("#hard-teacher-status"),root=$("#hard-teacher-result"),distribution=$("#hard-teacher-distribution");
+  const result=teacher?.result;
+  if(result){
+    status.className="status-pill online";status.textContent="分析完成";
+    const evidence=(result.evidence||[]).map(item=>`<li>${escapeHtml(item.description||item.type)}${item.segment_id?` <code>${escapeHtml(item.segment_id)}</code>`:""}</li>`).join("");
+    const counter=(result.counter_evidence||[]).map(item=>`<li>${escapeHtml(item)}</li>`).join("");
+    root.className="teacher-result";
+    root.innerHTML=`<div><span>教师建议</span><strong>${escapeHtml(LABEL_NAME[result.label]||result.label)}</strong></div><div><span>置信度</span><strong>${result.confidence==null?"—":`${(result.confidence*100).toFixed(1)}%`}</strong></div><p>${escapeHtml(result.reason||"暂无判断依据")}</p>${evidence?`<section class="teacher-evidence"><strong>关键证据</strong><ul>${evidence}</ul></section>`:""}${counter?`<section class="teacher-evidence counter"><strong>反向证据／限制</strong><ul>${counter}</ul></section>`:""}`;
+    renderSixDistribution(distribution,result.distribution,"尚无教师六类分布");
+    return;
+  }
+  status.className="status-pill disabled";status.textContent=titleForStatus(teacher?.status||"not_run");
+  root.className="teacher-placeholder";root.textContent=teacher?.reason||"难例已入队，等待服务器 GPU 准入";
+  renderSixDistribution(distribution,null,"尚无教师六类分布");
+}
+
+async function selectHardSample(sampleId) {
+  const item=state.hardSamples.find(value=>value.sample_id===sampleId);if(!item)return;
+  state.hardSample=item;renderHardOptions();
+  setVideo($("#hard-pose-video"),item.media?.pose||"");
+  $("#hard-pose-status").textContent="已生成";
+  $("#hard-score").className="status-pill online";
+  $("#hard-score").textContent=`命中 ${item.matched_condition_count||0} 项`;
+  const predictionRoot=$("#hard-prediction-list");
+  predictionRoot.className="prediction-list";
+  predictionRoot.innerHTML=(item.prediction?.topk||[]).map((entry,index)=>`<div class="prediction-row"><span class="rank">${index+1}</span><span>${escapeHtml(LABEL_NAME[entry.label]||entry.label)}</span><div class="score-track"><span style="width:${Math.max(1,entry.score*100)}%"></span></div><strong>${(entry.score*100).toFixed(1)}%</strong></div>`).join("");
+  const checks=renderDifficultyChecks(item.difficulty_checks);
+  $("#hard-evidence").innerHTML=`<section><strong>五项难例判定</strong><ul class="difficulty-check-list">${checks}</ul></section>`;
+  renderHardTeacher(item.teacher);
 }
 
 async function startJob(action, sampleId = state.inferenceSample?.sample_id) {
@@ -347,106 +374,76 @@ function renderLabelButtons() {
 }
 
 async function loadDatasetPage() {
-  const params=new URLSearchParams({offset:state.datasetPage*state.datasetPageSize,limit:state.datasetPageSize});
   const status=$("#dataset-status").value,dataset=$("#dataset-source").value,query=$("#dataset-search").value.trim();
-  if(status!=="all")params.set("status",status);if(dataset!=="all")params.set("dataset",dataset);if(query)params.set("query",query);
   try{
-    const result=await api(`/api/samples?${params}`);state.datasetTotal=result.total;$("#dataset-total").textContent=result.total;
-    $("#dataset-table").innerHTML=result.items.map(item=>`<tr><td><strong>${escapeHtml(item.sample_id)}</strong></td><td>${escapeHtml(item.source_dataset)}</td><td>${escapeHtml(LABEL_NAME[item.source_label]||item.source_label||"—")}</td><td>${escapeHtml(LABEL_NAME[item.prediction?.topk?.[0]?.label]||item.prediction?.topk?.[0]?.label||"处理中")}</td><td>${escapeHtml(LABEL_NAME[item.manual_label]||"—")}</td><td><span class="state-badge ${item.status}">${titleForStatus(item.status)}</span></td><td><button class="table-action" data-open-review="${escapeHtml(item.sample_id)}">查看 / 处置</button></td></tr>`).join("");
-    const pages=Math.max(1,Math.ceil(result.total/state.datasetPageSize));$("#page-info").textContent=`第 ${state.datasetPage+1} / ${pages} 页`;$("#page-prev").disabled=state.datasetPage===0;$("#page-next").disabled=state.datasetPage+1>=pages;
+    const lowered=query.toLowerCase();
+    const filtered=state.samples.filter(item=>(status==="all"||item.workflow_status===status)&&(dataset==="all"||item.source_dataset===dataset)&&(!lowered||`${item.sample_id} ${item.source_dataset} ${item.prediction?.topk?.[0]?.label||""} ${item.teacher?.result?.label||""} ${item.manual_label||""}`.toLowerCase().includes(lowered)));
+    state.datasetTotal=filtered.length;$("#dataset-total").textContent=filtered.length;
+    const start=state.datasetPage*state.datasetPageSize,items=filtered.slice(start,start+state.datasetPageSize);
+    $("#dataset-table").innerHTML=items.map(item=>`<tr><td><strong>${escapeHtml(item.sample_id)}</strong></td><td>${escapeHtml(item.source_dataset)}</td><td>${escapeHtml(LABEL_NAME[item.prediction?.topk?.[0]?.label]||item.prediction?.topk?.[0]?.label||"处理中")}</td><td>${escapeHtml(LABEL_NAME[item.teacher?.result?.label]||item.teacher?.result?.label||"—")}</td><td>${escapeHtml(LABEL_NAME[item.manual_label]||item.manual_label||"—")}</td><td>${formatTime(item.produced_at)}</td><td><span class="state-badge ${item.workflow_status}">${titleForStatus(item.workflow_status)}</span></td><td><button class="table-action" data-open-review="${escapeHtml(item.sample_id)}">查看</button></td></tr>`).join("");
+    const pages=Math.max(1,Math.ceil(filtered.length/state.datasetPageSize));if(state.datasetPage>=pages){state.datasetPage=pages-1;return loadDatasetPage();}$("#page-info").textContent=`第 ${state.datasetPage+1} / ${pages} 页`;$("#page-prev").disabled=state.datasetPage===0;$("#page-next").disabled=state.datasetPage+1>=pages;
     $$("[data-open-review]").forEach(button=>button.onclick=async()=>{setPage("inference");await selectInference(button.dataset.openReview);});
   }catch(error){toast(error.message,true);}
 }
 
-function renderPipeline() {
-  const steps=[["数据准备","Campus6 最终清单",true],["骨架提取","RTMDet/RTMPose COCO-17",state.capabilities.pose_extraction?.enabled],["学生预测","M1FKD INT8 Campus6",state.capabilities.campus6_inference?.enabled],["难例筛选","置信度、间隔与姿态质量",true],["大模型教师","按需 Qwen3-VL-8B",state.capabilities.qwen_teacher?.enabled],["人工复核","六分类与审计",true],["批次训练","回放、蒸馏与 QAT",true],["评测发布","通过门槛后人工发布",true]];
-  $("#pipeline-flow").innerHTML=steps.map(([name,desc,enabled],i)=>`<div class="flow-step ${enabled?"enabled":""}"><span class="num">0${i+1} · ${enabled?"READY":"LOCKED"}</span><strong>${name}</strong><small>${desc}</small></div>`).join("");
-}
-
-function renderEvolution() {
-  const value=state.evolution||{}, enabled=Boolean(value.enabled), running=value.status==="running";
-  const badge=$("#evolution-status"), button=$("#run-evolution");
-  if(!badge||!button)return;
-  const statusName={manual:"按批次执行",starting:"启动中",watching:"自动监控中",running:"执行中",error:"运行异常",disabled:"未启用"}[value.status]||value.status||"未知";
-  badge.textContent=statusName;
-  badge.className=`status-pill ${enabled&&value.status!=="error"?"online":"disabled"}`;
-  button.disabled=true;
-  button.title=value.reason||"训练闭环通过命令行批次执行";
-  const pseudo=value.pseudo||{}, hard=value.hard_mining||{};
-  $("#evolution-counts").innerHTML=[
-    ["已接受伪标签",pseudo.accepted||0],
-    ["待人工复核",pseudo.review||0],
-    ["已拒绝",pseudo.rejected||0],
-    ["难例池",hard.selected||0],
-  ].map(([name,count])=>`<div class="setting-item"><span>${name}</span><code>${count}</code></div>`).join("");
-  const training=value.training||{}, report=training.last_report;
-  const reasonName={
-    training_disabled:"训练已在配置中关闭",
-    insufficient_accepted_pseudo_labels:"可训练伪标签尚未达到总量门槛",
-    insufficient_new_pseudo_labels:"新增伪标签尚未达到触发门槛",
-    missing_training_python:"未找到可运行 ProtoGCN 的训练 Python",
-    insufficient_selected_training_gpus:"已选训练 GPU 数量不足或当前不可用",
-    missing_production_checkpoint:"未找到当前线上 ProtoGCN 权重",
-    training_cooldown:"仍在训练冷却期",
-  };
-  const lines=[
-    `阶段: ${value.stage||"idle"}`,
-    `最近扫描: ${formatTime(value.last_scan_at)}`,
-    `当前权重: ${value.active_checkpoint||"未找到"}`,
-    `可训练伪标签: ${training.trainable_count||0}（新增 ${training.new_count||0}）`,
-  ];
-  if((training.reasons||[]).length)lines.push(`等待条件: ${training.reasons.map(item=>reasonName[item]||item).join("；")}`);
-  if(training.outcome)lines.push(`最近训练结果: ${training.outcome==="promoted"?"验证通过，已切换权重":"验证未通过，保留原权重"}`);
-  if(report)lines.push(`验证: baseline Top-1=${(report.baseline?.top1_acc??0).toFixed(4)}, candidate Top-1=${(report.candidate?.top1_acc??0).toFixed(4)}, gate=${report.passed?"PASS":"REJECT"}`);
-  if(value.last_error)lines.push(`错误: ${value.last_error}`);
-  $("#evolution-training").textContent=lines.join("\n");
-}
-
-async function triggerEvolution() {
-  toast("Campus6 闭环采用可审计的批次训练；请使用 train_campus6.py 和 experiments/campus6_gap。", true);
-}
-
 function renderModels() {
   const models=[
-    ["RTMDet + RTMPose","双人 COCO-17 骨架","姿态模型",state.capabilities.pose_extraction?.enabled,"DAHUA_RTMPOSE_PYTHON"],
-    ["M1FKD INT8 Campus6","4.56 MB QAT + logits/feature KD","正式推理模型",state.capabilities.campus6_inference?.enabled,state.system.student_runtime?.checkpoint],
-    ["Campus6 GAP ProtoGCN","42.50 MB FP32","训练与回归基线",true,state.system.student_runtime?.training_baseline],
-    ["Qwen3-VL-8B","仅在服务器空闲 GPU 足够时按需加载","语义教师",state.capabilities.qwen_teacher?.enabled,state.capabilities.qwen_teacher?.reason||"GPU 准入检查中"],
+    ["骨架提取模型","RTMDet-S + RTMPose-S","双人 COCO-17 骨架提取与匿名化跟踪",state.capabilities.pose_extraction?.enabled],
+    ["GCN 模型","M1FKD INT8 Campus6","4.56 MB 量化蒸馏六分类模型",state.capabilities.campus6_inference?.enabled],
+    ["多模态大模型","Qwen3-VL-8B","基于骨架视频与结构化语义分析难例",state.capabilities.qwen_teacher?.enabled],
   ];
-  $("#model-grid").innerHTML=models.map(([name,desc,type,enabled,config])=>`<article class="panel model-card"><div class="panel-head"><div class="model-icon">◈</div><span class="status-pill ${enabled?"online":"disabled"}">${enabled?"已配置":"未启用"}</span></div><h3>${name}</h3><p>${desc}</p><div class="model-meta"><div><span>用途</span><strong>${type}</strong></div><div><span>配置</span><strong>${config}</strong></div><div><span>状态</span><strong>${enabled?"可运行":"等待接入"}</strong></div></div></article>`).join("");
+  $("#model-grid").innerHTML=models.map(([type,name,desc,enabled])=>`<article class="panel model-card compact"><div class="panel-head"><div class="model-icon">◈</div><span class="status-pill ${enabled?"online":"disabled"}">${enabled?"可运行":"不可用"}</span></div><label>${type}</label><select class="model-select" aria-label="${type}"><option selected>${name}</option></select><p>${desc}</p></article>`).join("");
+  const value=state.modelStatus||{}, production=value.production||{}, metrics=production.metrics||{}, candidate=value.candidate;
+  const perClass=metrics.per_class||{};
+  const classRows=LABELS.map(([id,name])=>`<div><span>${name}</span><strong>${perClass[id]?.accuracy==null?"—":`${(perClass[id].accuracy*100).toFixed(1)}%`}</strong></div>`).join("");
+  const stages=["candidate","validated","production"].map(stage=>`<span class="release-stage ${stage==="production"?"active":""}">${({candidate:"Candidate",validated:"Validated",production:"Production"})[stage]}</span>`).join('<i>→</i>');
+  $("#model-release").innerHTML=`<article class="panel production-card"><div class="panel-head"><div><span class="panel-kicker">CURRENT MODEL</span><h3>${escapeHtml(production.name||"M1FKD INT8 Campus6")}</h3></div><span class="status-pill online">Production</span></div><div class="release-facts"><div><span>生成时间</span><strong>${formatTime(production.generated_at)}</strong></div><div><span>发布时间</span><strong>${formatTime(production.deployed_at)}</strong></div><div><span>模型大小</span><strong>${production.size_mb==null?"—":`${production.size_mb.toFixed(2)} MB`}</strong></div><div><span>六分类总体准确率</span><strong>${metrics.overall_accuracy==null?"—":`${(metrics.overall_accuracy*100).toFixed(1)}%`}</strong></div><div><span>平均类别准确率</span><strong>${metrics.mean_class_accuracy==null?"—":`${(metrics.mean_class_accuracy*100).toFixed(1)}%`}</strong></div></div><div class="per-class-metrics">${classRows}</div></article><article class="panel release-card"><div class="panel-head"><h3>模型评估与发布</h3><span class="status-pill ${candidate?"online":"disabled"}">${candidate?escapeHtml(candidate.status):"无候选模型"}</span></div><div class="release-flow">${stages}</div><p>${candidate?`最近候选模型 ${escapeHtml(candidate.model_id||"—")} 当前状态：${escapeHtml(candidate.status||"candidate")}。`:"当前没有待评估 Candidate；新模型通过总体、平均类别与逐类指标门槛后方可进入 Production。"}</p><div class="rollback-state"><span>回滚</span><strong>${value.rollback?.available?"可恢复上一 Production":"暂无上一 Production"}</strong></div></article>`;
+}
+
+function durationText(seconds) {
+  if(seconds==null)return "等待训练进程估算";
+  const value=Math.max(0,Math.round(seconds));
+  const hours=Math.floor(value/3600),minutes=Math.floor(value%3600/60),secs=value%60;
+  return [hours?`${hours} 小时`:"",minutes?`${minutes} 分钟`:"",(!hours&&secs)?`${secs} 秒`:""].filter(Boolean).join(" ")||"即将完成";
+}
+
+function renderTrainingStatus() {
+  const root=$("#training-status");if(!root)return;
+  const value=state.trainingStatus||{},running=Boolean(value.running);
+  root.innerHTML=`<div class="training-metrics"><article class="panel"><span>当前状态</span><strong>${running?"正在训练":value.status==="failed"?"训练异常":"未训练"}</strong></article><article class="panel"><span>上次训练后新增数据</span><strong>${value.new_sample_count||0} 条</strong></article><article class="panel"><span>当前阶段</span><strong>${({waiting_for_data:"等待新增数据",train:"模型训练",validate:"模型评估",completed:"训练完成"})[value.stage]||value.stage||"—"}</strong></article><article class="panel"><span>预计剩余</span><strong>${running?durationText(value.estimated_remaining_seconds):"—"}</strong></article></div><article class="panel training-progress-card"><div class="panel-head"><div><h3>${running?"增量训练进行中":"增量训练状态"}</h3><p>最近训练：${formatTime(value.last_training_at)}</p></div><span class="status-pill ${running?"online":"disabled"}">${running?`${Math.round((value.progress||0)*100)}%`:"IDLE"}</span></div><div class="training-progress"><span style="width:${Math.max(0,Math.min(100,(value.progress||0)*100))}%"></span></div>${value.message?`<p>${escapeHtml(value.message)}</p>`:""}</article>`;
 }
 
 function renderSettings() {
-  const fields=[["代码根目录",state.system.repository_root],["服务器数据根目录",state.system.data_root],["运行数据目录",state.system.runtime_root],["Campus6 数据目录",state.system.source_root],["Campus6 清单",state.system.manifest_path],["审核数据库",state.system.database_path],["推理产物目录",state.system.artifact_root],["Qwen GPU 准入",state.capabilities.qwen_teacher?.reason||"已通过"],["当前 INT8 学生权重",state.system.active_student_checkpoint]];
-  $("#system-paths").innerHTML=fields.map(([name,value])=>`<div class="setting-item"><span>${name}</span><code>${escapeHtml(projectPath(value))}</code></div>`).join("");
   renderGpuSettings();
 }
 
 function renderGpuSettings() {
   const value=state.gpus||{}, gpus=value.gpus||[];
   const status=$("#gpu-status"), save=$("#save-gpu-settings");
-  if(!status||!save||!$("#gpu-grid")||!$("#gpu-help"))return;
+  if(!status||!save||!$("#gpu-grid"))return;
   status.textContent=value.available?`${gpus.length} 张 ProtoGCN GPU 可用`:"未检测到 GPU";
   status.className=`status-pill ${value.available?"online":"disabled"}`;
   save.disabled=!value.available;
   if(!gpus.length){
     $("#gpu-grid").innerHTML='<div class="empty-state">nvidia-smi 未返回可用 GPU。请确认容器已挂载 NVIDIA 设备与驱动。</div>';
-    $("#gpu-help").textContent="GPU 配置不会静默回退到 CPU；设备不可用时推理任务会明确失败。";
     return;
   }
-  const pose=new Set(value.pose_gpu_ids||[]), student=new Set(value.student_gpu_ids||[]);
+  const pose=new Set(value.pose_gpu_ids||[]), student=new Set(value.student_gpu_ids||[]), teacher=new Set(value.teacher_gpu_ids||[]), teacherAuto=value.teacher_mode!=="manual";
+  $("#teacher-gpu-auto").checked=teacherAuto;
   $("#gpu-grid").innerHTML=gpus.map(gpu=>{
     const ratio=gpu.memory_total_mb?Math.min(100,Math.round(gpu.memory_used_mb/gpu.memory_total_mb*100)):0;
+    const serviceState=(gpu.service_roles||[]).length?`本服务占用：${gpu.service_roles.join("、")}`:"本服务空闲";
     return `<div class="gpu-card">
       <div class="gpu-card-head"><span>GPU ${gpu.index}</span><strong>${escapeHtml(gpu.name)}</strong></div>
+      <div class="gpu-service-state ${gpu.service_busy?"busy":"idle"}">${escapeHtml(serviceState)}</div>
       <div class="gpu-live"><span>利用率 ${gpu.utilization_gpu_percent}%</span><span>${gpu.temperature_c}°C</span></div>
       <div class="gpu-memory"><span style="width:${ratio}%"></span></div>
       <small>${gpu.memory_used_mb} / ${gpu.memory_total_mb} MiB</small>
       <label><input type="checkbox" data-gpu-kind="pose" value="${gpu.index}" ${pose.has(gpu.index)?"checked":""}> RTMDet/RTMPose</label>
       <label><input type="checkbox" data-gpu-kind="student" value="${gpu.index}" ${student.has(gpu.index)?"checked":""}> M1FKD Campus6</label>
+      <label><input type="checkbox" data-gpu-kind="teacher" value="${gpu.index}" ${teacher.has(gpu.index)?"checked":""} ${teacherAuto?"disabled":""}> Qwen3-VL-8B</label>
     </div>`;
   }).join("");
-  $("#gpu-help").textContent=`RTMDet/RTMPose 与 M1FKD Campus6 都使用勾选的 CUDA GPU 池；每个新任务按服务内占用、实时利用率和显存占用自动选择最佳卡。Qwen3-VL-8B 仅在满足空闲显存门槛时独占一张 GPU。`;
 }
 
 async function refreshGpus() {
@@ -457,7 +454,7 @@ async function refreshGpus() {
 async function saveGpuSettings() {
   const selected=kind=>$$(`input[data-gpu-kind="${kind}"]:checked`).map(input=>Number(input.value));
   try{
-    state.gpus=await api("/api/gpus",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({pose_gpu_ids:selected("pose"),student_gpu_ids:selected("student")})});
+    state.gpus=await api("/api/gpus",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({pose_gpu_ids:selected("pose"),student_gpu_ids:selected("student"),teacher_gpu_ids:selected("teacher"),teacher_auto:$("#teacher-gpu-auto").checked})});
     renderGpuSettings();toast("GPU 设置已保存，后续新任务立即生效");
   }catch(error){toast(error.message,true)}
 }
@@ -474,7 +471,8 @@ function bindEvents() {
   document.addEventListener("click",()=>setSampleTreeOpen(false));
   if($("#refresh-gpus"))$("#refresh-gpus").onclick=refreshGpus;
   if($("#save-gpu-settings"))$("#save-gpu-settings").onclick=saveGpuSettings;
-  if($("#run-evolution"))$("#run-evolution").onclick=triggerEvolution;
+  if($("#teacher-gpu-auto"))$("#teacher-gpu-auto").onchange=event=>$$('input[data-gpu-kind="teacher"]').forEach(input=>input.disabled=event.target.checked);
+  if($("#hard-sample-select"))$("#hard-sample-select").onchange=event=>selectHardSample(event.target.value);
   $("#previous-review").onclick=()=>selectReview(state.reviewIndex-1);$("#next-review").onclick=()=>selectReview(state.reviewIndex+1);
   $("#undo-review").onclick=async()=>{try{const sample=await api("/api/reviews/undo-last",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({actor:reviewer()})});toast(`已撤销 ${sample.sample_id} 的最近审核`);await refreshAll(true);}catch(error){toast(error.message,true)}};
   ["#dataset-source","#dataset-status"].forEach(s=>$(s).onchange=()=>{state.datasetPage=0;loadDatasetPage()});let searchTimer;$("#dataset-search").oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{state.datasetPage=0;loadDatasetPage()},250)};

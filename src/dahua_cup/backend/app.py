@@ -17,6 +17,7 @@ from dahua_cup.semantic_teacher.schemas import LABELS
 
 from .baseline import Campus6Baseline
 from .config import Settings, path_is_within
+from .hard_samples import evaluate_hard_sample
 from .jobs import ACTIONS, JobManager
 from .store import REVIEW_LABELS, ReviewStore
 
@@ -39,10 +40,28 @@ class JobRequest(BaseModel):
 class GPUSettingsRequest(BaseModel):
     pose_gpu_ids: List[int]
     student_gpu_ids: List[int]
+    teacher_gpu_ids: List[int] = Field(default_factory=list)
+    teacher_auto: bool = True
 
 
 def _not_found(kind: str, identifier: str) -> HTTPException:
     return HTTPException(status_code=404, detail=f"{kind} not found: {identifier}")
+
+
+def _difficulty_checks(
+    prediction: Optional[dict], teacher: Optional[dict], settings: Settings
+) -> list[dict]:
+    decision = evaluate_hard_sample(
+        prediction,
+        teacher,
+        margin_threshold=settings.teacher_trigger_margin,
+        conflict_confidence_threshold=settings.teacher_conflict_confidence,
+        instability_threshold=settings.student_instability_threshold,
+    )
+    return [
+        {"code": item["code"], "label": item["title"], "status": item["status"]}
+        for item in decision["conditions"]
+    ]
 
 
 def _sample_payload(app: FastAPI, sample: dict) -> dict:
@@ -53,11 +72,63 @@ def _sample_payload(app: FastAPI, sample: dict) -> dict:
     # Raw RGB paths are strictly server-side implementation details.  The
     # browser only receives the derived pose video and inference artefacts.
     sample.pop("video_path", None)
+    sample.pop("hard_score", None)
+    sample.pop("quality_score", None)
     sample["media"] = {
         "pose": f"/api/samples/{sample_id}/media/pose",
     }
-    sample["prediction"] = manager.prediction(sample_id)
-    sample["teacher"] = manager.teacher_state(sample_id)
+    prediction = manager.prediction(sample_id)
+    teacher = manager.teacher_state(sample_id)
+    sample["prediction"] = prediction
+    sample["teacher"] = teacher
+    decision = evaluate_hard_sample(
+        prediction,
+        teacher,
+        margin_threshold=manager.settings.teacher_trigger_margin,
+        conflict_confidence_threshold=manager.settings.teacher_conflict_confidence,
+        instability_threshold=manager.settings.student_instability_threshold,
+    )
+    checks = [
+        {"code": item["code"], "label": item["title"], "status": item["status"]}
+        for item in decision["conditions"]
+    ]
+    sample["difficulty_checks"] = checks
+    sample["hard_decision"] = decision
+    teacher_finished = (
+        teacher.get("status") in {"completed", "failed"}
+        and bool(teacher.get("generated_at"))
+    )
+    check_status = {item["code"]: item["status"] for item in checks}
+    teacher_needed = any(
+        check_status.get(code) == "yes" for code in ("C1", "C4", "C5")
+    )
+    teacher_completed = (
+        teacher.get("status") == "completed" and bool(teacher.get("result"))
+    )
+    human_needed = teacher_completed and (
+        bool((teacher.get("result") or {}).get("needs_review"))
+        or check_status.get("C2") == "yes"
+        or check_status.get("C3") == "yes"
+    )
+    human_completed = (
+        bool(sample.get("reviewer"))
+        and sample.get("reviewer") != "official_initial_annotation"
+    )
+    if teacher_needed and not teacher_completed:
+        workflow_status = "waiting_teacher"
+        workflow_reason = "hard_sample_waiting_teacher"
+    elif human_needed and not human_completed:
+        workflow_status = "waiting_human"
+        workflow_reason = "teacher_result_requires_review"
+    else:
+        workflow_status = "complete"
+        workflow_reason = "inference_chain_completed"
+    sample["workflow_status"] = workflow_status
+    sample["workflow_reason"] = workflow_reason
+    sample["produced_at"] = (
+        teacher.get("generated_at")
+        if teacher_finished else (prediction or {}).get("generated_at")
+    )
     return sample
 
 
@@ -68,6 +139,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         settings.ensure_directories()
         store = ReviewStore(settings.database_path)
+        app.state.recovered_jobs = store.recover_incomplete_jobs()
         annotations = settings.baseline_annotations()
         baseline = (
             Campus6Baseline(annotations, settings.baseline_predictions())
@@ -165,11 +237,22 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     def gpu_state(request: Request):
         return request.app.state.jobs.gpus.state()
 
+    @app.get("/api/models/status")
+    def model_status(request: Request):
+        return request.app.state.jobs.model_status()
+
+    @app.get("/api/training/status")
+    def incremental_training_status(request: Request):
+        return request.app.state.jobs.incremental_training_status()
+
     @app.put("/api/gpus")
     def update_gpu_state(value: GPUSettingsRequest, request: Request):
         try:
             return request.app.state.jobs.gpus.update(
-                value.pose_gpu_ids, value.student_gpu_ids
+                value.pose_gpu_ids,
+                value.student_gpu_ids,
+                value.teacher_gpu_ids,
+                teacher_auto=value.teacher_auto,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -200,6 +283,24 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         except KeyError:
             raise _not_found("sample", sample_id) from None
         return _sample_payload(request.app, sample)
+
+    @app.get("/api/hard-samples")
+    def hard_samples(
+        request: Request,
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=50, ge=1, le=200),
+    ):
+        result = request.app.state.jobs.hard_samples(
+            offset=offset, limit=limit
+        )
+        current: Settings = request.app.state.settings
+        for item in result["items"]:
+            item.pop("hard_score", None)
+            item.pop("quality_score", None)
+            item["difficulty_checks"] = _difficulty_checks(
+                item.get("prediction"), item.get("teacher"), current
+            )
+        return result
 
     @app.post("/api/samples/import-manifest")
     def import_manifest(request: Request):
