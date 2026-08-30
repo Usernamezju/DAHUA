@@ -18,6 +18,7 @@ from typing import Dict, List, Optional
 
 from dahua_cup.pipeline.common import render_command
 
+from .baseline import Campus6Baseline
 from .config import Settings
 from .gpu import GPUManager
 from .store import ReviewStore
@@ -293,9 +294,15 @@ def teacher_student_conflict(
 
 
 class JobManager:
-    def __init__(self, settings: Settings, store: ReviewStore):
+    def __init__(
+        self,
+        settings: Settings,
+        store: ReviewStore,
+        baseline: Optional[Campus6Baseline] = None,
+    ):
         self.settings = settings
         self.store = store
+        self.baseline = baseline
         self.gpus = GPUManager(settings.gpu_settings_path)
         self.gpu_condition = threading.Condition()
         self.active_regular_gpu_jobs = 0
@@ -964,9 +971,20 @@ class JobManager:
 
     def prediction(self, sample_id: str) -> Optional[dict]:
         path = self.artifacts(sample_id)["prediction"]
-        if not path.is_file():
-            return None
-        return json.loads(path.read_text(encoding="utf-8"))
+        if path.is_file():
+            return json.loads(path.read_text(encoding="utf-8"))
+        if self.baseline is not None:
+            return self.baseline.prediction(sample_id)
+        return None
+
+    def pose_video(self, sample_id: str) -> Optional[Path]:
+        """Return a skeleton-only video, rendering existing poses if needed."""
+        path = self.artifacts(sample_id)["pose_video"]
+        if path.is_file() and path.stat().st_size > 0:
+            return path
+        if self.baseline is not None and self.baseline.has(sample_id):
+            return self.baseline.render_pose_video(sample_id, path)
+        return None
 
     def student_snapshot(self, sample_id: str) -> dict:
         prediction = self.prediction(sample_id)
@@ -978,15 +996,22 @@ class JobManager:
                 "status": prediction.get("status", "completed"),
                 "model": "ProtoGCN",
                 "captured_at": captured_at,
-                "prediction_path": str(prediction_path),
+                "prediction_path": (
+                    str(prediction_path)
+                    if prediction_path.is_file()
+                    else "existing-campus6-int8-index"
+                ),
             })
             snapshot.setdefault(
                 "generated_at",
-                datetime.fromtimestamp(
-                    prediction_path.stat().st_mtime, timezone.utc
-                ).isoformat(),
+                (
+                    datetime.fromtimestamp(
+                        prediction_path.stat().st_mtime, timezone.utc
+                    ).isoformat()
+                    if prediction_path.is_file() else captured_at
+                ),
             )
-            snapshot["top5"] = list(prediction.get("topk") or [])[:5]
+            snapshot["top6"] = list(prediction.get("topk") or [])[:6]
             snapshot.pop("topk", None)
             return snapshot
 
@@ -999,12 +1024,12 @@ class JobManager:
             None,
         )
         if latest is None:
-            return {"status": "not_run", "captured_at": captured_at, "top5": []}
+            return {"status": "not_run", "captured_at": captured_at, "top6": []}
         status = latest.get("status") or "unknown"
         return {
             "status": status,
             "captured_at": captured_at,
-            "top5": [],
+            "top6": [],
             "job_id": latest.get("job_id"),
             "device": latest.get("student_device", ""),
             "error": latest.get("message", "") if status == "failed" else "",
@@ -1111,4 +1136,8 @@ class JobManager:
                 continue
             exists = path.is_file() and path.stat().st_size > 0
             result[key] = exists
+        if self.baseline is not None and self.baseline.has(sample_id):
+            result["feature"] = True
+            result["pose_video"] = True
+            result["prediction"] = self.baseline.prediction(sample_id) is not None
         return result

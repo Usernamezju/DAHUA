@@ -47,7 +47,7 @@ def parser():
     value.add_argument("--checkpoint", default=os.environ.get("DAHUA_CAMPUS6_CHECKPOINT", str(DEFAULT_CHECKPOINT)))
     value.add_argument("--checkpoint-format", choices=("auto", "fp32", "quantized"), default="auto")
     value.add_argument("--label-map", default=str(DEFAULT_LABELS)); value.add_argument("--device", default="cuda:0")
-    value.add_argument("--topk", type=int, default=5)
+    value.add_argument("--topk", type=int, default=6)
     return value
 
 
@@ -108,7 +108,7 @@ def initialize_model(config: Path, checkpoint: Path, device: str, requested_form
 
 def main(argv=None):
     args = parser().parse_args(argv)
-    if not 1 <= args.topk <= 5: raise ValueError("topk must be in [1,5]")
+    if not 1 <= args.topk <= 6: raise ValueError("topk must be in [1,6]")
     feature = require_file(args.feature, "RTMPose17 feature"); config = require_file(args.config, "Campus6 config")
     checkpoint = require_file(args.checkpoint, "Campus6 checkpoint"); class_names = labels(args.label_map)
     keypoint, score = load_feature(feature)
@@ -118,7 +118,7 @@ def main(argv=None):
         config, checkpoint, args.device, args.checkpoint_format
     )
     video = {"keypoint": keypoint, "keypoint_score": score, "total_frames": keypoint.shape[1],
-             "label": -1, "start_index": 0, "modality": "Pose"}
+             "label": -1, "start_index": 0, "modality": "Pose", "test_mode": True}
     ranked = inference_recognizer(model, video)
     topk = [{"class_index": int(index), "label": class_names[int(index)], "score": float(score)}
             for index, score in ranked[: min(args.topk, len(ranked))]]

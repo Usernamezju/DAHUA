@@ -262,6 +262,57 @@ class ReviewStore:
                 )
         return {"inserted": inserted, "existing": existing}
 
+    def import_baseline_records(self, records: list[dict]) -> Dict[str, int]:
+        """Index existing official labels without copying any model artefact."""
+        inserted = existing = 0
+        now = _now()
+        with self.connect() as connection:
+            for item in records:
+                sample_id = str(item["sample_id"])
+                previous = connection.execute(
+                    "SELECT 1 FROM samples WHERE sample_id = ?", (sample_id,)
+                ).fetchone()
+                if previous:
+                    # Never overwrite a later human decision on restart.
+                    # Existing rows only need their immutable source index
+                    # refreshed; labels/reviewer/reason remain auditable.
+                    connection.execute(
+                        """
+                        UPDATE samples SET video_path=?, source_dataset=?,
+                          source_label=?, updated_at=? WHERE sample_id=?
+                        """,
+                        (
+                            str(item["video_path"]),
+                            str(item["source_dataset"]),
+                            str(item["source_label"]),
+                            now, sample_id,
+                        ),
+                    )
+                    existing += 1
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO samples(
+                          sample_id,video_path,source_dataset,source_label,
+                          status,manual_label,reviewer,reason_code,note,
+                          created_at,updated_at,reviewed_at
+                        ) VALUES (?,?,?,?,'reviewed',?,?,?,?,?,?,?)
+                        """,
+                        (
+                            sample_id,
+                            str(item["video_path"]),
+                            str(item["source_dataset"]),
+                            str(item["source_label"]),
+                            str(item["manual_label"]),
+                            str(item["reviewer"]),
+                            str(item["reason_code"]),
+                            str(item.get("note", "")),
+                            now, now, now,
+                        ),
+                    )
+                    inserted += 1
+        return {"inserted": inserted, "existing": existing}
+
     def add_sample(
         self,
         sample_id: str,
@@ -551,7 +602,7 @@ class ReviewStore:
         created_at = _now()
         status = "reviewed" if final_label in LABELS else final_label
         student_snapshot = student_snapshot or {
-            "status": "not_recorded", "top5": []
+            "status": "not_recorded", "top6": []
         }
         teacher_snapshot = teacher_snapshot or {"status": "not_recorded"}
         student_snapshot_json = json.dumps(student_snapshot, ensure_ascii=False)
@@ -790,6 +841,7 @@ class ReviewStore:
             "student_top3_label", "student_top3_score",
             "student_top4_label", "student_top4_score",
             "student_top5_label", "student_top5_score",
+            "student_top6_label", "student_top6_score",
             "teacher_status", "teacher_model", "teacher_suggested_label",
             "teacher_confidence",
         )
@@ -825,7 +877,9 @@ class ReviewStore:
                     )
                 except (TypeError, ValueError):
                     teacher = {"status": "invalid_snapshot"}
-                top5 = list(student.get("top5") or [])[:5]
+                top6 = list(
+                    student.get("top6") or student.get("top5") or []
+                )[:6]
                 teacher_result = teacher.get("result") or {}
                 row = {
                     "clip_id": value["sample_id"],
@@ -850,8 +904,8 @@ class ReviewStore:
                     "teacher_suggested_label": teacher_result.get("suggested_label", ""),
                     "teacher_confidence": teacher_result.get("confidence", ""),
                 }
-                for index in range(5):
-                    prediction = top5[index] if index < len(top5) else {}
+                for index in range(6):
+                    prediction = top6[index] if index < len(top6) else {}
                     row["student_top{}_label".format(index + 1)] = prediction.get("label", "")
                     row["student_top{}_score".format(index + 1)] = prediction.get("score", "")
                 writer.writerow(row)

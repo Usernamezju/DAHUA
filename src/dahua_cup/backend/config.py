@@ -212,6 +212,36 @@ class Settings:
         candidate = candidate.resolve()
         return candidate if candidate.is_file() else None
 
+    def baseline_annotations(self) -> Optional[Path]:
+        """Existing Campus6 COCO-17 skeletons and official manual labels."""
+        configured = os.environ.get(
+            "DAHUA_CAMPUS6_BASELINE_ANNOTATIONS", ""
+        ).strip()
+        server_default = Path(
+            "/workspace/data/xzz_data/DAHUA/experiments/acceptance/campus6/"
+            "m1fkd_int8_full/annotations_with_all.pkl"
+        )
+        candidate = (
+            Path(configured).expanduser()
+            if configured else server_default
+        ).resolve()
+        return candidate if candidate.is_file() else None
+
+    def baseline_predictions(self) -> Optional[Path]:
+        """Per-sample probabilities produced once by the accepted INT8 artifact."""
+        configured = os.environ.get(
+            "DAHUA_CAMPUS6_BASELINE_PREDICTIONS", ""
+        ).strip()
+        server_default = Path(
+            "/workspace/data/xzz_data/DAHUA/experiments/acceptance/campus6/"
+            "m1fkd_int8_full/M1FKD.eval_all.pkl"
+        )
+        candidate = (
+            Path(configured).expanduser()
+            if configured else server_default
+        ).resolve()
+        return candidate if candidate.is_file() else None
+
     def default_student_command(self) -> str:
         if self.student_command:
             return self.student_command

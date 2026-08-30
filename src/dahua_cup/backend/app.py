@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from dahua_cup.semantic_teacher.schemas import LABELS
 
+from .baseline import Campus6Baseline
 from .config import Settings, path_is_within
 from .jobs import ACTIONS, JobManager
 from .store import REVIEW_LABELS, ReviewStore
@@ -67,9 +68,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         settings.ensure_directories()
         store = ReviewStore(settings.database_path)
+        annotations = settings.baseline_annotations()
+        baseline = (
+            Campus6Baseline(annotations, settings.baseline_predictions())
+            if annotations is not None else None
+        )
         app.state.settings = settings
         app.state.store = store
-        app.state.jobs = JobManager(settings, store)
+        app.state.baseline = baseline
+        app.state.baseline_import = (
+            store.import_baseline_records(baseline.records())
+            if baseline is not None and baseline.available
+            else {"inserted": 0, "existing": 0}
+        )
+        app.state.jobs = JobManager(settings, store, baseline)
         app.state.manifest_import = store.import_manifest(settings.manifest_path)
         app.state.jobs.start_continuous_pipeline()
         yield
@@ -115,6 +127,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             },
             "rtmpose_joint_score_threshold": current.joint_score_threshold,
             "manifest_import": request.app.state.manifest_import,
+            "baseline_import": request.app.state.baseline_import,
             "labels": list(LABELS),
             "teacher_routing_config": (
                 str(current.teacher_routing_config)
@@ -270,12 +283,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             raise _not_found("sample", sample_id) from None
         paths = request.app.state.jobs.artifacts(sample_id)
         if kind == "pose":
-            path = paths["pose_video"]
+            path = request.app.state.jobs.pose_video(sample_id)
         elif kind in {"feature", "prediction"}:
             path = paths[kind]
         else:
             raise HTTPException(status_code=404, detail="unknown media kind")
-        if not path.is_file():
+        if path is None or not path.is_file():
             raise HTTPException(status_code=404, detail=f"{kind} artifact is not ready")
         media_type, _ = mimetypes.guess_type(path.name)
         return FileResponse(path, media_type=media_type or "application/octet-stream", filename=None)

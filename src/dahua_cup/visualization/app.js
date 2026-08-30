@@ -228,7 +228,9 @@ function renderReasoning(teacher, prediction) {
     status.className="status-pill online";status.textContent="教师分析完成";
     summary.className="teacher-result";
     summary.innerHTML=`<div><span>最终建议</span><strong>${escapeHtml(LABEL_NAME[result.label]||result.label||"—")}</strong></div><div><span>置信度</span><strong>${result.confidence==null?"—":`${(result.confidence*100).toFixed(1)}%`}</strong></div>`;
-    const values=result.distribution||{};
+    const values=Array.isArray(result.distribution)
+      ? Object.fromEntries(result.distribution.map(item=>[item.label,Number(item.probability)||0]))
+      : (result.distribution||{});
     distribution.className="prediction-list";
     distribution.innerHTML=LABELS.map(([id,name],index)=>`<div class="prediction-row"><span class="rank">${index+1}</span><span>${name}</span><div class="score-track"><span style="width:${Math.max(1,(values[id]||0)*100)}%"></span></div><strong>${((values[id]||0)*100).toFixed(1)}%</strong></div>`).join("");
     reason.textContent=result.reason||result.reasoning_summary||"教师未返回文字依据";
