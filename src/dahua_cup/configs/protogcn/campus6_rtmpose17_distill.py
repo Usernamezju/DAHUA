@@ -4,7 +4,7 @@ from pathlib import Path
 import os
 import sys
 
-_base_ = ["../../../gcn_models/ProtoGCN/configs/campus6/rtmpose26_k400_2d_full.py"]
+_base_ = ["../../../../third_party/ProtoGCN/configs/campus6/rtmpose26_k400_2d_full.py"]
 # MMCV executes a temporary copy of this config, so ``__file__`` is not the
 # repository location.  The launcher exports DAHUA_CODE_ROOT; cwd is the
 # documented fallback for direct ``tools/dist_train.sh`` invocation.

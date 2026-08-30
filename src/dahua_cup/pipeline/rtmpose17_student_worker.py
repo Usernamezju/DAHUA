@@ -11,16 +11,33 @@ from pathlib import Path
 
 import numpy as np
 
-from dahua_cup.feature_extraction.semantic_graph import summarize_ntu25_pose_feature
+from dahua_cup.feature_extraction.semantic_graph import summarize_pose_feature
 from dahua_cup.pipeline.common import file_hash, log_event, require_file
-from dahua_cup.pipeline.protogcn_student_worker import previous_inference_history
+from dahua_cup.paths import CONFIG_ROOT, PROTOGCN_ROOT
 
-
-ROOT = Path(__file__).resolve().parents[2]
-PROTOGCN_ROOT = ROOT / "gcn_models" / "ProtoGCN"
 DEFAULT_CONFIG = PROTOGCN_ROOT / "configs/campus6/rtmpose26_k400_2d_gap_full.py"
-DEFAULT_LABELS = ROOT / "dahua_cup/configs/campus/campus6_labels.txt"
+DEFAULT_LABELS = CONFIG_ROOT / "campus/campus6_labels.txt"
 DEFAULT_CHECKPOINT = Path("/workspace/data/xzz_data/DAHUA/experiments/ProtoGCN/campus6_rtmpose26_k400_2d_gap_full_manual_v2/best_top1_acc_epoch_40.pth")
+MAX_INFERENCE_HISTORY = 20
+
+
+def previous_inference_history(path: Path) -> list[dict]:
+    """Preserve a compact history when a sample is reclassified."""
+    if not path.is_file():
+        return []
+    try:
+        previous = json.loads(path.read_text(encoding="utf-8"))
+        history = list(previous.get("inference_history") or [])
+        topk = list(previous.get("topk") or [])
+        if topk:
+            history.append({
+                "generated_at": previous.get("generated_at", ""),
+                "checkpoint": previous.get("checkpoint", ""),
+                "top1": topk[0],
+            })
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return history[-MAX_INFERENCE_HISTORY:]
 
 
 def parser():
@@ -73,7 +90,7 @@ def main(argv=None):
     topk = [{"class_index": int(index), "label": class_names[int(index)], "score": float(score)}
             for index, score in ranked[: min(args.topk, len(ranked))]]
     output_path = Path(args.output)
-    semantic = summarize_ntu25_pose_feature(args.sample_id, feature)
+    semantic = summarize_pose_feature(args.sample_id, feature)
     output = {"schema_version": "protogcn_prediction.v1", "status": "completed", "sample_id": args.sample_id,
               "task": "campus6_rtmpose17", "label_space_size": 6, "modality": "joint",
               "generated_at": datetime.now(timezone.utc).isoformat(), "feature": str(feature), "config": str(config),

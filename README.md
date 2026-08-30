@@ -26,9 +26,9 @@ reports/              checked benchmark and deployment reports
 docs/                 design, operations and acceptance material
 ```
 
-`dahua_cup -> src/dahua_cup` and `gcn_models -> third_party` are tracked
-compatibility symlinks for legacy launchers. New code should import
-`dahua_cup` and refer to `third_party/ProtoGCN` explicitly.
+This is a standard Python `src` layout: `src/dahua_cup/` is the importable
+application package, while `scripts/` holds only command-line maintenance
+tools. There are no compatibility symlinks or nested duplicate projects.
 
 ## Install
 

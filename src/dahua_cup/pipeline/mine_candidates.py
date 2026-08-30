@@ -116,8 +116,6 @@ def _label_space_size(
         size = int(override)
     elif row.get("label_space_size"):
         size = int(row["label_space_size"])
-    elif str(row.get("task", "")).startswith("ntu120"):
-        size = 120
     else:
         size = len(distribution)
     if size < max(2, len(distribution)):

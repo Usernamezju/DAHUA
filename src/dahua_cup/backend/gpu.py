@@ -112,8 +112,7 @@ class GPUManager:
                 set(self._selection["student_gpu_ids"]) - available_ids
             ),
             "strategy": "round_robin",
-            "mediapipe_device": "cpu",
-            "mediapipe_delegate": "CPU",
+            "pose_runtime": "RTMPose on CPU",
         }
 
     def update(self, pose_gpu_ids, student_gpu_ids) -> dict:

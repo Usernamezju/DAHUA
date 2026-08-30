@@ -117,7 +117,7 @@ def pose_quality_metrics(path: Path) -> dict:
 
 
 def student_instability(prediction: dict) -> dict:
-    """Compare the current NTU120 Top-1 with bounded prior-run summaries."""
+    """Compare the current Campus6 Top-1 with bounded prior-run summaries."""
     topk = prediction.get("topk") or []
     history = list(prediction.get("inference_history") or [])
     try:
@@ -168,7 +168,7 @@ def teacher_gate_decision(
     instability_score: float | None = None,
     instability_threshold: float = 0.60,
 ) -> dict:
-    """Route an NTU120 result to student, Qwen, or direct human review."""
+    """Route a Campus6 result to student, Qwen, or direct human review."""
     thresholds = (
         confidence_threshold,
         margin_threshold,
@@ -255,7 +255,7 @@ def teacher_gate_decision(
 def teacher_student_conflict(
     prediction: dict, teacher_payload: dict, threshold: float
 ) -> dict:
-    """Detect a high-confidence label conflict in the same NTU120 space."""
+    """Detect a high-confidence label conflict in the Campus6 label space."""
     if not 0 <= threshold <= 1:
         raise ValueError("teacher conflict threshold must be in [0, 1]")
     topk = prediction.get("topk") or []
@@ -362,7 +362,6 @@ class JobManager:
 
     def capability_state(self) -> dict:
         pose_command = self.settings.default_pose_command()
-        locator_command = self.settings.default_locator_command()
         student_command = self.settings.default_student_command()
         teacher_command = self.settings.default_teacher_command()
         return {
@@ -372,45 +371,17 @@ class JobManager:
             },
             "pose_extraction": {
                 "enabled": bool(pose_command),
-                "reason": "" if pose_command else "尚未配置 DAHUA_VIS_POSE_COMMAND 或 MediaPipe 模型",
-            },
-            "person_localization": {
-                "enabled": bool(locator_command),
-                "reason": (
-                    ""
-                    if locator_command
-                    else "未配置 NanoDet；MediaPipe 将直接读取原视频"
-                ),
-            },
-            "ntu120_inference": {
-                "enabled": bool(student_command) and not self.settings.campus6_backend,
-                "reason": "" if (student_command and not self.settings.campus6_backend) else "当前 Web 使用 Campus6 RTMPose17 六分类后端",
+                "reason": "" if pose_command else "尚未配置 RTMPose Python 环境或 DAHUA_VIS_POSE_COMMAND",
             },
             "campus6_inference": {
-                "enabled": bool(student_command) and self.settings.campus6_backend,
-                "reason": "" if (student_command and self.settings.campus6_backend) else "尚未配置 Campus6 RTMPose17 权重或环境",
+                "enabled": bool(student_command),
+                "reason": "" if student_command else "尚未配置 Campus6 ProtoGCN 权重或 Python 环境",
             },
             "manual_review": {"enabled": True, "reason": ""},
             "dataset_export": {"enabled": True, "reason": ""},
             "qwen_teacher": {
                 "enabled": bool(teacher_command),
                 "reason": "" if teacher_command else "尚未配置 Qwen 模型或教师 Python 环境",
-            },
-            "incremental_training": {
-                "enabled": self.settings.evolution_enabled,
-                "reason": (
-                    ""
-                    if self.settings.evolution_enabled
-                    else "自动闭环未启用"
-                ),
-            },
-            "model_release": {
-                "enabled": self.settings.evolution_enabled,
-                "reason": (
-                    ""
-                    if self.settings.evolution_enabled
-                    else "自动验证与发布未启用"
-                ),
             },
             "live_camera": {"enabled": False, "reason": "第一阶段只处理服务器文件"},
         }
@@ -422,9 +393,9 @@ class JobManager:
         required = {
             "preview": ("video_preview",),
             "pose": ("pose_extraction", "video_preview"),
-            "classify": (("campus6_inference",) if self.settings.campus6_backend else ("ntu120_inference",)),
+            "classify": ("campus6_inference",),
             "teacher": ("qwen_teacher",),
-            "full": (("video_preview", "pose_extraction", "campus6_inference") if self.settings.campus6_backend else ("video_preview", "pose_extraction", "ntu120_inference")),
+            "full": ("video_preview", "pose_extraction", "campus6_inference"),
         }[action]
         unavailable = [capabilities[name]["reason"] for name in required if not capabilities[name]["enabled"]]
         if unavailable:
@@ -534,41 +505,16 @@ class JobManager:
                 self.store.update_job(job_id, progress=0.08, message="正在生成浏览器预览")
                 self._ensure_preview(video, paths["preview"], logs)
             if action in {"pose", "full"}:
-                pose_input_video = video
-                locator_template = self.settings.default_locator_command()
-                if locator_template:
-                    self.store.update_job(
-                        job_id,
-                        progress=0.18,
-                        message="正在使用 NanoDet 定位人物并生成联合裁剪",
-                    )
-                    locator_values = {
-                        key: shlex.quote(str(value))
-                        for key, value in {
-                            "sample_id": job["sample_id"],
-                            "video": video,
-                            **paths,
-                            "repository_root": self.settings.repository_root,
-                            "device": os.environ.get(
-                                "DAHUA_NANODET_DEVICE", "cpu"
-                            ),
-                        }.items()
-                    }
-                    locator_command = render_command(
-                        locator_template, **locator_values
-                    )
-                    logs.append(self._execute(locator_command))
-                    pose_input_video = paths["localized_video"]
                 self.store.update_job(
                     job_id,
                     progress=0.30,
-                    message=("正在 CPU 提取 RTMPose17 骨架" if self.settings.campus6_backend else "正在 CPU 提取 MediaPipe 骨架"),
+                    message="正在 CPU 提取 RTMPose17 骨架",
                 )
                 values = {
                     key: shlex.quote(str(value))
                     for key, value in {
                         "sample_id": job["sample_id"],
-                        "video": pose_input_video,
+                        "video": video,
                         **paths,
                         "repository_root": self.settings.repository_root,
                         "device": "cpu",
@@ -579,22 +525,12 @@ class JobManager:
                 pose_command = render_command(
                     self.settings.default_pose_command(), **values
                 )
-                if self.settings.campus6_backend:
-                    pose_command = set_command_option(pose_command, "--device", "cpu")
-                    pose_command = set_command_option(pose_command, "--joint-score-threshold", str(self.settings.joint_score_threshold))
-                else:
-                    pose_command = set_command_option(pose_command, "--delegate", "cpu")
-                    for option, option_value in (
-                        ("--min-pose-detection-confidence", self.settings.pose_detection_confidence),
-                        ("--min-pose-presence-confidence", self.settings.pose_presence_confidence),
-                        ("--min-tracking-confidence", self.settings.pose_tracking_confidence),
-                        ("--joint-score-threshold", self.settings.joint_score_threshold),
-                    ):
-                        pose_command = set_command_option(pose_command, option, str(option_value))
+                pose_command = set_command_option(pose_command, "--device", "cpu")
+                pose_command = set_command_option(pose_command, "--joint-score-threshold", str(self.settings.joint_score_threshold))
                 logs.append(self._execute(pose_command))
-                self.store.update_job(job_id, progress=0.62, message=("正在渲染 RTMPose17 骨架视频" if self.settings.campus6_backend else "正在渲染 NTU25 骨架视频"))
+                self.store.update_job(job_id, progress=0.62, message="正在渲染 RTMPose17 骨架视频")
                 command = [
-                    sys.executable, "-m", ("dahua_cup.pipeline.render_rtmpose17_pose" if self.settings.campus6_backend else "dahua_cup.pipeline.render_ntu25_pose"),
+                    sys.executable, "-m", "dahua_cup.pipeline.render_rtmpose17_pose",
                     "--feature", str(paths["feature"]),
                     "--output", str(paths["pose_video"]),
                     "--ffmpeg", str(self.settings.ffmpeg),
@@ -646,9 +582,9 @@ class JobManager:
                             "schema_version": "protogcn_prediction.v1",
                             "status": "blocked_quality",
                             "sample_id": job["sample_id"],
-                            "task": "campus6_rtmpose17" if self.settings.campus6_backend else "ntu120_xsub",
-                            "label_space_size": 6 if self.settings.campus6_backend else 120,
-                            "modality": "joint" if self.settings.campus6_backend else "bone",
+                            "task": "campus6_rtmpose17",
+                            "label_space_size": 6,
+                            "modality": "joint",
                             "generated_at": _now(),
                             "feature": str(paths["feature"]),
                             "checkpoint": str(
@@ -1041,11 +977,10 @@ class JobManager:
                 except (TypeError, ValueError):
                     reason = "当前样本缺少完整的教师路由统计；仍可手工强制运行 Qwen"
                 else:
-                    task_name = "Campus6" if self.settings.campus6_backend else "NTU120"
                     reason = (
-                        "{} 学生 Top-1 置信度 {:.1%} 达到阈值 {:.1%}，"
+                        "Campus6 学生 Top-1 置信度 {:.1%} 达到阈值 {:.1%}，"
                         "自动跳过 Qwen；仍可手工强制运行"
-                    ).format(task_name, confidence_value, threshold_value)
+                    ).format(confidence_value, threshold_value)
                 status = "skipped"
             return {
                 "status": status,

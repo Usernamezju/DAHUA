@@ -1,5 +1,0 @@
-numpy>=1.23,<2
-opencv-python-headless>=4.6
-Pillow>=9
-# Candidate acquisition uses the standalone yt-dlp binary installed by
-# setup_candidate_tools.sh; it is intentionally not imported into Python 3.8.

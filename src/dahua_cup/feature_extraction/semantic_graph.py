@@ -58,12 +58,11 @@ def build_semantic_graph(sample_id, track_ids, center, velocity, valid_mask, tim
     }
 
 
-def summarize_ntu25_pose_feature(sample_id: str, path: str | Path) -> dict:
+def summarize_pose_feature(sample_id: str, path: str | Path) -> dict:
     """Summarize an exported pose artifact using measured quantities only.
 
-    The historical name is retained for backwards compatibility.  Besides the
-    MediaPipe NTU-25 format this accepts the Campus6 RTMPose COCO-17 format;
-    both expose people as ``[M,T,V]`` confidence/validity arrays.
+    Campus6 RTMPose COCO-17 artifacts expose people as ``[M,T,V]``
+    confidence/validity arrays.
     """
     feature_path = Path(path)
     if not feature_path.is_file():

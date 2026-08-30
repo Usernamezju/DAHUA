@@ -6,9 +6,7 @@ import argparse
 from pathlib import Path
 
 from dahua_cup.pipeline.common import render_command, require_file, run_command
-
-
-CONFIG_ROOT = Path(__file__).resolve().parents[1] / "configs" / "protogcn"
+from dahua_cup.paths import PROTOGCN_ROOT
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,7 +15,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--work-dir", required=True)
     parser.add_argument("--init-checkpoint")
     parser.add_argument("--distill", action="store_true")
-    parser.add_argument("--backend", choices=("rtmpose17", "ntu25"), default="ntu25")
     parser.add_argument("--gpus", type=int, default=1)
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--learning-rate", type=float)
@@ -25,7 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--train-command",
         default=(
-            "bash gcn_models/ProtoGCN/tools/dist_train.sh "
+            "bash third_party/ProtoGCN/tools/dist_train.sh "
             "{config} {gpus} --validate --ann-file {ann_file} "
             "--work-dir {work_dir}{overrides}"
         ),
@@ -38,12 +35,10 @@ def main(argv=None) -> None:
     if args.gpus < 1:
         raise ValueError("gpus must be positive")
     annotation = require_file(args.ann_file, "Campus6 annotation")
-    if args.backend == "rtmpose17":
-        config = CONFIG_ROOT / "campus6_rtmpose17_distill.py" if args.distill else (
-            Path(__file__).resolve().parents[2] / "gcn_models/ProtoGCN/configs/campus6/rtmpose26_k400_2d_full.py"
-        )
-    else:
-        config = CONFIG_ROOT / ("campus6_ntu25_bone_distill.py" if args.distill else "campus6_ntu25_bone.py")
+    config = (
+        PROTOGCN_ROOT / "configs/campus6/rtmpose26_k400_2d_gap_full.py"
+        if args.distill else PROTOGCN_ROOT / "configs/campus6/rtmpose26_k400_2d_full.py"
+    )
     require_file(config, "Campus6 ProtoGCN config")
     environment = {}
     if args.init_checkpoint:

@@ -17,7 +17,6 @@ from pydantic import BaseModel, Field
 from dahua_cup.semantic_teacher.schemas import LABELS
 
 from .config import Settings, path_is_within
-from .evolution import EvolutionManager
 from .jobs import ACTIONS, JobManager, safe_name
 from .store import REVIEW_LABELS, ReviewStore
 
@@ -89,15 +88,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         app.state.store = store
         app.state.jobs = JobManager(settings, store)
         app.state.manifest_import = store.import_manifest(settings.manifest_path)
-        app.state.evolution = None
-        if settings.evolution_enabled:
-            app.state.evolution = EvolutionManager(
-                settings, store, app.state.jobs
-            )
-            app.state.evolution.start()
         yield
-        if app.state.evolution is not None:
-            app.state.evolution.stop()
         app.state.jobs.executor.shutdown(wait=False)
 
     app = FastAPI(
@@ -126,24 +117,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "manifest_path": str(current.manifest_path),
             "database_path": str(current.database_path),
             "artifact_root": str(current.artifact_root),
-            "evolution_enabled": current.evolution_enabled,
-            "evolution_config": (
-                str(current.evolution_config)
-                if current.evolution_config else None
-            ),
-            "evolution_root": (
-                str(current.evolution_root)
-                if current.evolution_root else None
-            ),
             "active_student_checkpoint": str(
                 current.resolve_student_checkpoint() or ""
             ),
-            "mediapipe_thresholds": {
-                "detection": current.pose_detection_confidence,
-                "presence": current.pose_presence_confidence,
-                "tracking": current.pose_tracking_confidence,
-                "joint_score": current.joint_score_threshold,
-            },
+            "rtmpose_joint_score_threshold": current.joint_score_threshold,
             "manifest_import": request.app.state.manifest_import,
             "labels": list(LABELS),
             "teacher_routing_config": (
@@ -175,31 +152,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 ),
             },
             "max_workers": current.max_workers,
-        }
-
-    @app.get("/api/evolution")
-    def evolution_status(request: Request):
-        manager = request.app.state.evolution
-        if manager is None:
-            return {
-                "enabled": False,
-                "status": "disabled",
-                "reason": "NTU120 auto evolution is disabled",
-            }
-        return manager.status()
-
-    @app.post("/api/evolution/run")
-    def trigger_evolution(request: Request):
-        manager = request.app.state.evolution
-        if manager is None:
-            raise HTTPException(
-                status_code=409,
-                detail="NTU120 auto evolution is disabled",
-            )
-        accepted = manager.trigger()
-        return {
-            "accepted": accepted,
-            "reason": "" if accepted else "an evolution scan is already running",
         }
 
     @app.get("/api/gpus")

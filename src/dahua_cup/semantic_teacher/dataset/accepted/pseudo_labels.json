@@ -1,9 +1,0 @@
-[
-  {
-    "video": "/workspace/code/DAHUA/dahua_cup/semantic_teacher/examples/test.mp4",
-    "label": "嬉戏推搡",
-    "confidence": 0.9,
-    "reason": "两人在木墙前进行嬉戏推搡，其中一人试图将另一人推倒。",
-    "timestamp": "2026-07-07T02:02:15.460082"
-  }
-]

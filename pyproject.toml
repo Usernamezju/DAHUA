@@ -21,7 +21,7 @@ test = ["pytest>=7.0", "httpx>=0.27"]
 
 [project.scripts]
 dahua-web = "dahua_cup.backend.app:main"
-dahua-verify = "dahua_cup.scripts.verify_requirements:main"
+dahua-verify = "dahua_cup.verification:main"
 dahua-infer = "dahua_cup.pipeline.infer_video:main"
 
 [tool.setuptools]
@@ -33,10 +33,9 @@ where = ["src"]
 [tool.setuptools.package-data]
 dahua_cup = [
   "configs/**/*.yaml", "configs/**/*.txt", "configs/**/*.py",
-  "dataset_construction/**/*.json", "dataset_construction/**/*.txt",
-  "dataset_construction/**/*.sh", "semantic_teacher/**/*.json",
+  "semantic_teacher/**/*.json",
   "semantic_teacher/**/*.yaml", "semantic_teacher/**/*.txt",
-  "visualization/*", "stn/web/*"
+  "visualization/*"
 ]
 
 [tool.pytest.ini_options]

@@ -8,15 +8,12 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from dahua_cup.feature_extraction.semantic_graph import summarize_ntu25_pose_feature
+from dahua_cup.feature_extraction.semantic_graph import summarize_pose_feature
 from dahua_cup.pipeline.common import file_hash, log_event, require_file
+from dahua_cup.paths import CONFIG_ROOT
 from dahua_cup.semantic_teacher.api.qwen3_backend import Qwen3Config, Qwen3Teacher
 
-
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_LABEL_MAP = (
-    REPOSITORY_ROOT / "gcn_models/GAP/text/ntu120_label_map.txt"
-)
+DEFAULT_LABEL_MAP = CONFIG_ROOT / "campus/campus6_labels.txt"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -93,7 +90,7 @@ def load_student_hint(
 
 def summarize_pose_feature(sample_id: str, path: str | Path) -> dict:
     """Backward-compatible teacher entry point for the shared measurement logic."""
-    return summarize_ntu25_pose_feature(sample_id, path)
+    return summarize_pose_feature(sample_id, path)
 
 
 def main(argv=None) -> None:
