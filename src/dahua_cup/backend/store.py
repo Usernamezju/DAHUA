@@ -819,6 +819,26 @@ class ReviewStore:
             )
             return int(cursor.rowcount)
 
+    def redact_verbose_teacher_failures(self) -> int:
+        """Remove historical model-load traces from reviewer-facing job data."""
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE jobs
+                SET message = 'Qwen 教师分析失败，请稍后重试',
+                    log_text = ''
+                WHERE action = 'teacher'
+                  AND status = 'failed'
+                  AND (
+                    instr(log_text, 'Traceback') > 0
+                    OR instr(log_text, 'Loading weights') > 0
+                    OR instr(message, 'Traceback') > 0
+                    OR instr(message, '命令执行失败') > 0
+                  )
+                """
+            )
+            return int(cursor.rowcount)
+
     def update_job(self, job_id: str, **changes) -> dict:
         allowed = {"status", "progress", "message", "log_text", "started_at", "finished_at"}
         values = {key: value for key, value in changes.items() if key in allowed}

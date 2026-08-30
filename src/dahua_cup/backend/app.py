@@ -142,6 +142,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         settings.ensure_directories()
         store = ReviewStore(settings.database_path)
         app.state.recovered_jobs = store.recover_incomplete_jobs()
+        app.state.redacted_teacher_failures = store.redact_verbose_teacher_failures()
         annotations = settings.baseline_annotations()
         baseline = (
             Campus6Baseline(annotations, settings.baseline_predictions())

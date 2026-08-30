@@ -723,12 +723,12 @@ class JobManager:
                 stderr=subprocess.STDOUT,
             )
         except subprocess.CalledProcessError as exc:
-            output = (exc.stdout or "").strip()
-            detail = output[-12000:] if output else "进程没有输出错误详情"
+            is_teacher = any(
+                "qwen_teacher_worker" in str(part) for part in command
+            )
+            label = "Qwen 教师分析失败" if is_teacher else "后台推理任务失败"
             raise RuntimeError(
-                "命令执行失败（退出码 {}）：{}\n{}".format(
-                    exc.returncode, " ".join(command), detail
-                )
+                "{}（退出码 {}），请稍后重试".format(label, exc.returncode)
             ) from exc
         return completed.stdout[-12000:]
 
@@ -1186,12 +1186,13 @@ class JobManager:
                 )
             self.gpus.set_teacher_active(admission["gpu_ids"])
             try:
-                return self._execute(
+                self._execute(
                     teacher_command,
                     extra_env=self.gpus.teacher_process_environment(
                         admission["gpu_ids"]
                     ),
                 )
+                return "Qwen 教师分析完成"
             finally:
                 self.gpus.set_teacher_active([])
 

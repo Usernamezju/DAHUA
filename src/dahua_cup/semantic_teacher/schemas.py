@@ -82,7 +82,18 @@ class TeacherOutput:
         data["distribution"] = normalize_distribution(
             data.get("distribution", {}), allowed_labels
         )
-        data["evidence"] = [Evidence(**item) for item in data.get("evidence", [])]
+        # Qwen may append measured fields such as ``pose_coverage`` to an
+        # evidence object. They are useful in its private reasoning but are
+        # not part of the stable teacher_output.v1 contract. Preserve the
+        # required, auditable fields and ignore additive model-specific keys.
+        data["evidence"] = [
+            Evidence(**{
+                key: item[key]
+                for key in ("type", "segment_id", "description")
+                if key in item
+            })
+            for item in data.get("evidence", [])
+        ]
         result = cls(**data)
         result.validate()
         return result
