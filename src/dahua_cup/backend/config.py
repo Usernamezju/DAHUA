@@ -255,39 +255,28 @@ class Settings:
         return candidate if candidate.is_file() else None
 
     def student_probability_temperature(self) -> float:
-        """Return the validation-fitted temperature for live M1KD output.
+        """Return the total temperature used for review-facing probabilities.
 
-        The prediction-cache sidecar is the source of truth for this scalar.
-        An explicit environment override is retained for a future promoted
-        model; no sidecar means an identity transformation.
+        The accepted cache retains its validation-fitted temperature as
+        provenance.  Review uses a deliberately softer total temperature of
+        5.0 by default, while the legacy environment variable remains a
+        compatible override.
         """
         configured = os.environ.get(
+            "DAHUA_CAMPUS6_REVIEW_TEMPERATURE", ""
+        ).strip() or os.environ.get(
             "DAHUA_CAMPUS6_PROBABILITY_TEMPERATURE", ""
         ).strip()
-        value: object = configured or 1.0
-        if not configured:
-            predictions = self.baseline_predictions()
-            sidecar = (
-                predictions.with_suffix(predictions.suffix + ".json")
-                if predictions is not None else None
-            )
-            if sidecar is not None and sidecar.is_file():
-                try:
-                    payload = json.loads(sidecar.read_text(encoding="utf-8"))
-                    value = (payload.get("confidence_calibration") or {}).get(
-                        "temperature", 1.0
-                    )
-                except (OSError, TypeError, ValueError, json.JSONDecodeError):
-                    value = 1.0
+        value: object = configured or 5.0
         try:
             temperature = float(value)
         except (TypeError, ValueError) as exc:
             raise ValueError(
-                "DAHUA_CAMPUS6_PROBABILITY_TEMPERATURE must be positive"
+                "DAHUA_CAMPUS6_REVIEW_TEMPERATURE must be positive"
             ) from exc
         if not math.isfinite(temperature) or temperature <= 0:
             raise ValueError(
-                "DAHUA_CAMPUS6_PROBABILITY_TEMPERATURE must be positive"
+                "DAHUA_CAMPUS6_REVIEW_TEMPERATURE must be positive"
             )
         return temperature
 

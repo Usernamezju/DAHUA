@@ -16,6 +16,9 @@ import numpy as np
 
 from dahua_cup.pipeline.common import file_hash
 from dahua_cup.pipeline.render_rtmpose17_pose import render
+from dahua_cup.pipeline.rtmpose17_student_worker import (
+    retarget_temperature_probabilities,
+)
 from dahua_cup.feature_extraction.semantic_graph import summarize_pose_arrays
 from dahua_cup.semantic_teacher.schemas import LABELS
 
@@ -23,9 +26,17 @@ from dahua_cup.semantic_teacher.schemas import LABELS
 class Campus6Baseline:
     """Index official server artefacts without extracting or inferring again."""
 
-    def __init__(self, annotations: Path, predictions: Optional[Path] = None):
+    def __init__(
+        self,
+        annotations: Path,
+        predictions: Optional[Path] = None,
+        review_temperature: float = 5.0,
+    ):
         self.annotations_path = Path(annotations).resolve()
         self.predictions_path = Path(predictions).resolve() if predictions else None
+        if not np.isfinite(review_temperature) or review_temperature <= 0:
+            raise ValueError("review_temperature must be positive")
+        self.review_temperature = float(review_temperature)
         self._lock = threading.Lock()
         self._annotations: dict[str, dict] = {}
         self._records: list[dict] = []
@@ -81,6 +92,21 @@ class Campus6Baseline:
         checkpoint_hash = (
             file_hash(checkpoint) if checkpoint.is_file() else ""
         )
+        source_temperature = float(
+            (prediction_metadata.get("confidence_calibration") or {}).get(
+                "temperature", 1.0
+            )
+        )
+        if not np.isfinite(source_temperature) or source_temperature <= 0:
+            raise ValueError("cached Campus6 probability temperature must be positive")
+        review_calibration = {
+            **dict(prediction_metadata.get("confidence_calibration") or {}),
+            "method": "temperature_scaling",
+            "temperature": self.review_temperature,
+            "validation_temperature": source_temperature,
+            "review_softening": self.review_temperature != source_temperature,
+            "top1_preserved": True,
+        }
         generated = datetime.fromtimestamp(
             (self.predictions_path or self.annotations_path).stat().st_mtime,
             timezone.utc,
@@ -102,7 +128,11 @@ class Campus6Baseline:
                 "note": "split=" + split_for.get(str(frame_dir), "all"),
             })
             if scores is not None:
-                values = scores[score_index[str(frame_dir)]]
+                values = retarget_temperature_probabilities(
+                    scores[score_index[str(frame_dir)]],
+                    source_temperature,
+                    self.review_temperature,
+                )
                 ranked = np.argsort(values)[::-1][:6]
                 self._predictions[identifier] = {
                     "schema_version": "protogcn_prediction.v1",
@@ -124,9 +154,7 @@ class Campus6Baseline:
                         for key in ("correct", "total", "accuracy")
                         if key in prediction_metadata
                     },
-                    "confidence_calibration": prediction_metadata.get(
-                        "confidence_calibration", {}
-                    ),
+                    "confidence_calibration": review_calibration,
                     "topk": [
                         {
                             "class_index": int(class_index),

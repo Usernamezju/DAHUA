@@ -113,6 +113,27 @@ def temperature_scale_probabilities(
     return (adjusted / adjusted.sum()).astype(np.float32)
 
 
+def retarget_temperature_probabilities(
+    probabilities: np.ndarray,
+    source_temperature: float,
+    target_temperature: float,
+) -> np.ndarray:
+    """Convert probabilities calibrated at one temperature to another.
+
+    For a distribution generated as ``softmax(logits / source_temperature)``,
+    applying a further temperature of ``target/source`` produces exactly
+    ``softmax(logits / target_temperature)``.  This lets the review UI soften
+    precomputed probability caches without changing their class order.
+    """
+    if not np.isfinite(source_temperature) or source_temperature <= 0:
+        raise ValueError("Campus6 source probability temperature must be positive")
+    if not np.isfinite(target_temperature) or target_temperature <= 0:
+        raise ValueError("Campus6 target probability temperature must be positive")
+    return temperature_scale_probabilities(
+        probabilities, float(target_temperature) / float(source_temperature)
+    )
+
+
 def initialize_model(config: Path, checkpoint: Path, device: str, requested_format: str):
     """Build the correct inference graph and load FP32 or portable INT8 state."""
     sys.path.insert(0, str(PROTOGCN_ROOT))
