@@ -65,7 +65,7 @@ function setSidebarCollapsed(collapsed) {
 
 function setPage(page) {
   if (page === "review") page = "inference";
-  const titles = {dashboard:"运行总览",inference:"行为识别结果",hard:"难例分析",dataset:"审计记录",training:"增量训练",models:"模型管理",settings:"系统设置"};
+  const titles = {dashboard:"运行总览",inference:"行为识别结果",hard:"待人工审核难例",dataset:"审计记录",training:"增量训练",models:"模型管理",settings:"系统设置"};
   $$(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.page === page));
   $$(".page").forEach(item => item.classList.toggle("active", item.id === `page-${page}`));
   $("#page-title").textContent = titles[page];
@@ -231,7 +231,9 @@ function renderDifficultyChecks(checks) {
 function renderTeacher(teacher, pseudoRecord = null, prediction = null, difficultyChecks = []) {
   const status = $("#teacher-status"), root = $("#teacher-result"), distribution=$("#teacher-distribution"), collaboration=$("#collaboration-evidence");
   if(collaboration){
-    collaboration.innerHTML=`<section><strong>五项协同判定</strong><ul class="difficulty-check-list">${renderDifficultyChecks(difficultyChecks)}</ul></section>`;
+    const skipped = teacher?.status === "skipped";
+    collaboration.classList.toggle("hidden", skipped);
+    collaboration.innerHTML=skipped ? "" : `<section><strong>五项协同判定</strong><ul class="difficulty-check-list">${renderDifficultyChecks(difficultyChecks)}</ul></section>`;
   }
   if (teacher?.status === "completed" && teacher.result) {
     status.className = "status-pill online";
@@ -258,9 +260,9 @@ function renderTeacher(teacher, pseudoRecord = null, prediction = null, difficul
   const skipped = teacher?.status === "skipped";
   const blockedQuality = teacher?.status === "blocked_quality";
   status.className = `status-pill ${running ? "online" : "disabled"}`;
-  status.textContent = running ? titleForStatus(teacher.status) : blockedQuality ? "骨架质量不足" : skipped ? "学生高置信，已跳过" : teacher?.status === "failed" ? "分析失败" : teacher?.status === "not_run" ? "尚未运行" : "尚未启用";
+  status.textContent = running ? titleForStatus(teacher.status) : blockedQuality ? "骨架质量不足" : skipped ? "已跳过" : teacher?.status === "failed" ? "分析失败" : teacher?.status === "not_run" ? "尚未运行" : "尚未启用";
   root.className = "teacher-placeholder";
-  root.innerHTML = `<div class="teacher-icon">◇</div><div><strong>${running ? "Qwen 多模态教师正在分析" : blockedQuality ? "骨架质量门控未调用 Qwen" : skipped ? "难例门控未调用 Qwen" : "Qwen 多模态教师"}</strong><p>${escapeHtml(teacher?.reason || "读取骨架视频，并在当前模型对应的标签空间内给出独立判断。")}</p></div>`;
+  root.innerHTML = `<div class="teacher-icon">◇</div><div><strong>${running ? "Qwen 多模态教师正在分析" : blockedQuality ? "骨架质量门控未调用 Qwen" : skipped ? "学生高置信，未进入难例判定与 Qwen" : "Qwen 多模态教师"}</strong>${skipped ? "" : `<p>${escapeHtml(teacher?.reason || "读取骨架视频，并在当前模型对应的标签空间内给出独立判断。")}</p>`}</div>`;
   renderSixDistribution(distribution,null,"尚无教师六类分布");
 }
 
@@ -361,8 +363,8 @@ async function submitReview(finalLabel) {
     const currentIndex=Math.max(0,filteredReviewSamples().findIndex(item=>item.sample_id===currentId));
     const suggested=state.inferenceSample.suggested_label;
     const reason = finalLabel==="damaged"?"damaged":finalLabel==="out_of_scope"?"out_of_scope":finalLabel==="unknown"?"insufficient_evidence":finalLabel===suggested?"accept_suggestion":finalLabel.startsWith("playful")?"intent_playful":finalLabel.startsWith("conflict")?"intent_conflict":"manual_correction";
-    await api(`/api/samples/${encodeURIComponent(currentId)}/review`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({reviewer:reviewer(),final_label:finalLabel,reason_code:reason,note:$("#review-note").value})});
-    toast(`已保存人工结果与模型快照：${LABEL_NAME[finalLabel]}`);state.reviewSample=null;await refreshAll(true);
+    const reviewed = await api(`/api/samples/${encodeURIComponent(currentId)}/review`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({reviewer:reviewer(),final_label:finalLabel,reason_code:reason,note:$("#review-note").value})});
+    toast(reviewed.incremental_pool ? "人工标签与 GCN 不一致，已进入增量学习难例池" : `已保存人工结果与模型快照：${LABEL_NAME[finalLabel]}`);state.reviewSample=null;await refreshAll(true);
     if(state.reviewSamples.length) await selectReview(Math.min(currentIndex,state.reviewSamples.length-1));
   } catch(error){toast(error.message,true);}
 }

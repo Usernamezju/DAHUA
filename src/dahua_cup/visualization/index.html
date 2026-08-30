@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#0b111d">
   <title>校园行为语义理解平台</title>
-  <link rel="stylesheet" href="/styles.css?v=20260830-hard-analysis1">
+  <link rel="stylesheet" href="/styles.css?v=20260830-review-flow2">
 </head>
 <body>
   <div class="app-shell">
@@ -18,7 +18,7 @@
       <nav id="main-nav">
         <button class="nav-item active" data-page="dashboard" title="运行总览"><i>⌂</i><span>运行总览</span></button>
         <button class="nav-item" data-page="inference" title="行为识别结果"><i>▶</i><span>识别结果</span><b id="pending-badge">0</b></button>
-        <button class="nav-item" data-page="hard" title="难例分析"><i>◇</i><span>难例分析</span><b id="hard-badge">0</b></button>
+        <button class="nav-item" data-page="hard" title="待人工审核难例"><i>◇</i><span>待人工审核难例</span><b id="hard-badge">0</b></button>
         <button class="nav-item" data-page="dataset" title="审计记录"><i>▦</i><span>审计记录</span></button>
         <button class="nav-item" data-page="training" title="增量训练"><i>↗</i><span>增量训练</span></button>
         <div class="nav-label">模型与设备</div>
@@ -60,7 +60,7 @@
           <article class="panel"><div class="panel-head"><div><span class="panel-kicker">BEHAVIOR DISTRIBUTION</span><h3>六分类识别分布</h3></div><button class="text-button" data-goto="dataset">查看审计记录 →</button></div><div id="label-chart" class="bar-chart"></div></article>
           <article class="panel"><div class="panel-head"><div><span class="panel-kicker">PIPELINE</span><h3>能力状态</h3></div></div><div id="capability-list" class="capability-list"></div></article>
         </div>
-        <article class="panel"><div class="panel-head"><div><span class="panel-kicker">RECENT TASKS</span><h3>最近处理任务</h3></div></div><div id="recent-jobs" class="job-list empty-state">暂无运行任务</div></article>
+        <article class="panel"><details class="recent-tasks" open><summary><div><span class="panel-kicker">RECENT TASKS</span><h3>最近处理任务</h3></div><i aria-hidden="true">⌄</i></summary><div id="recent-jobs" class="job-list empty-state">暂无运行任务</div></details></article>
       </section>
 
       <section class="page" id="page-inference">
@@ -111,12 +111,12 @@
 
       <section class="page" id="page-hard">
         <div class="toolbar panel compact">
-          <div class="sample-browser"><label>选择难例</label><select id="hard-sample-select"><option value="">正在计算难例队列…</option></select></div>
+          <div class="sample-browser"><label>选择待人工审核难例</label><select id="hard-sample-select"><option value="">正在计算难例队列…</option></select></div>
           <div class="stat-inline"><strong id="hard-total">0</strong><span>个结构化难例</span></div>
           <div class="toolbar-spacer"></div><span class="status-pill online">Qwen 按 GPU 准入自动分析</span>
         </div>
         <div class="inspection-workspace">
-          <div class="video-grid workbench-videos"><article class="panel video-panel"><div class="panel-head"><div><span class="panel-kicker">HARD SAMPLE · SKELETON ONLY</span><h3>难例骨架序列</h3></div><span id="hard-pose-status" class="artifact-tag">等待选择</span></div><div class="video-frame pose"><video id="hard-pose-video" controls loop playsinline></video><div class="video-placeholder">仅展示现有 COCO-17 骨架</div></div></article></div>
+          <div class="video-grid workbench-videos"><article class="panel video-panel"><div class="panel-head"><div><span class="panel-kicker">HARD SAMPLE · SKELETON ONLY</span><h3>待人工审核难例骨架序列</h3></div><span id="hard-pose-status" class="artifact-tag">等待选择</span></div><div class="video-frame pose"><video id="hard-pose-video" controls loop playsinline></video><div class="video-placeholder">仅展示现有 COCO-17 骨架</div></div></article></div>
           <div class="two-column">
             <article class="panel evidence-panel"><div class="panel-head"><div><span class="panel-kicker">STUDENT UNCERTAINTY</span><h3>M1KD INT8 校准后六类概率</h3></div><span id="hard-score" class="status-pill disabled">—</span></div><div id="hard-prediction-list" class="prediction-list empty-state">请选择难例</div></article>
             <article class="panel evidence-panel"><div class="panel-head"><div><span class="panel-kicker">STRUCTURED HARD EVIDENCE</span><h3>难例判定证据</h3></div></div><div id="hard-evidence" class="evidence-details">请选择难例</div></article>
@@ -164,6 +164,6 @@
     </main>
   </div>
   <div id="toast-root"></div>
-  <script src="/app.js?v=20260830-hard-analysis1" defer></script>
+  <script src="/app.js?v=20260830-review-flow2" defer></script>
 </body>
 </html>

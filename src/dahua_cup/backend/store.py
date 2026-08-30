@@ -131,6 +131,8 @@ class ReviewStore:
             "hard_score": "REAL",
             "pseudo_dataset_path": "TEXT NOT NULL DEFAULT ''",
             "pseudo_record_json": "TEXT NOT NULL DEFAULT '{}'",
+            "incremental_pool": "INTEGER NOT NULL DEFAULT 0",
+            "incremental_reason": "TEXT NOT NULL DEFAULT ''",
         }
         for name, definition in sample_additions.items():
             if name not in sample_columns:
@@ -581,6 +583,67 @@ class ReviewStore:
                 value[target] = {"status": "invalid_snapshot"}
         return value
 
+    @staticmethod
+    def _student_top1_label(snapshot: object) -> str:
+        """Read the stored student Top-1 label without trusting UI input."""
+        if not isinstance(snapshot, dict):
+            return ""
+        topk = snapshot.get("top6") or snapshot.get("topk") or []
+        if not isinstance(topk, list) or not topk:
+            return ""
+        first = topk[0]
+        return str(first.get("label") or "") if isinstance(first, dict) else ""
+
+    @classmethod
+    def _is_incremental_hard_correction(
+        cls, final_label: str, student_snapshot: object
+    ) -> bool:
+        """A human six-class correction is a durable incremental hard case."""
+        student_label = cls._student_top1_label(student_snapshot)
+        return (
+            final_label in LABELS
+            and student_label in LABELS
+            and student_label != final_label
+        )
+
+    @classmethod
+    def _refresh_incremental_pool(
+        cls, connection: sqlite3.Connection, sample_id: str
+    ) -> bool:
+        """Rebuild the pool flag from active review history, including undo."""
+        rows = connection.execute(
+            """
+            SELECT final_label, student_snapshot_json
+            FROM reviews
+            WHERE sample_id = ? AND reverted_at IS NULL
+            ORDER BY review_id DESC
+            """,
+            (sample_id,),
+        ).fetchall()
+        enrolled = False
+        for row in rows:
+            try:
+                snapshot = json.loads(row["student_snapshot_json"] or "{}")
+            except (TypeError, ValueError):
+                snapshot = {}
+            if cls._is_incremental_hard_correction(row["final_label"], snapshot):
+                enrolled = True
+                break
+        connection.execute(
+            """
+            UPDATE samples
+            SET incremental_pool = ?,
+                incremental_reason = ?
+            WHERE sample_id = ?
+            """,
+            (
+                int(enrolled),
+                "human_label_disagrees_with_student" if enrolled else "",
+                sample_id,
+            ),
+        )
+        return enrolled
+
     def submit_review(
         self,
         sample_id: str,
@@ -635,6 +698,9 @@ class ReviewStore:
                 """,
                 (status, final_label, reviewer, reason_code, note.strip(), created_at, created_at, sample_id),
             )
+            enrolled_in_incremental_pool = self._refresh_incremental_pool(
+                connection, sample_id
+            )
             connection.execute(
                 "INSERT INTO events(sample_id, event_type, actor, payload_json, created_at) VALUES (?, 'review_submitted', ?, ?, ?)",
                 (
@@ -645,14 +711,41 @@ class ReviewStore:
                             "review_id": cursor.lastrowid,
                             "final_label": final_label,
                             "reason_code": reason_code,
+                            "student_top1_label": self._student_top1_label(
+                                student_snapshot
+                            ),
                             "student_status": student_snapshot.get("status"),
                             "teacher_status": teacher_snapshot.get("status"),
+                            "incremental_hard_enqueued": enrolled_in_incremental_pool,
                         },
                         ensure_ascii=False,
                     ),
                     created_at,
                 ),
             )
+            if enrolled_in_incremental_pool:
+                connection.execute(
+                    """
+                    INSERT INTO events(
+                      sample_id, event_type, actor, payload_json, created_at
+                    ) VALUES (?, 'incremental_hard_sample_enqueued', ?, ?, ?)
+                    """,
+                    (
+                        sample_id,
+                        reviewer,
+                        json.dumps(
+                            {
+                                "reason": "human_label_disagrees_with_student",
+                                "final_label": final_label,
+                                "student_top1_label": self._student_top1_label(
+                                    student_snapshot
+                                ),
+                            },
+                            ensure_ascii=False,
+                        ),
+                        created_at,
+                    ),
+                )
             dataset_path = connection.execute(
                 "SELECT pseudo_dataset_path FROM samples WHERE sample_id = ?",
                 (sample_id,),
@@ -722,6 +815,7 @@ class ReviewStore:
                     sample_id,
                 ),
             )
+            self._refresh_incremental_pool(connection, sample_id)
             connection.execute(
                 "INSERT INTO events(sample_id, event_type, actor, payload_json, created_at) VALUES (?, 'review_reverted', ?, ?, ?)",
                 (sample_id, actor, json.dumps({"review_id": review["review_id"]}), created_at),

@@ -47,3 +47,31 @@ def test_restart_marks_incomplete_jobs_failed(tmp_path):
     recovered = store.get_job(job["job_id"])
     assert recovered["status"] == "failed"
     assert recovered["finished_at"]
+
+
+def test_human_label_disagreement_enters_reversible_incremental_hard_pool(tmp_path):
+    store = ReviewStore(tmp_path / "review.sqlite3")
+    store.import_baseline_records([_record()])
+    store.submit_review(
+        "campus6_0000_test",
+        "reviewer-a",
+        "normal_run",
+        "manual_correction",
+        student_snapshot={
+            "status": "completed",
+            "top6": [{"label": "normal_walk", "score": 0.90}],
+        },
+    )
+
+    sample = store.get_sample("campus6_0000_test")
+    assert sample["incremental_pool"] == 1
+    assert sample["incremental_reason"] == "human_label_disagrees_with_student"
+    assert any(
+        event["event_type"] == "incremental_hard_sample_enqueued"
+        for event in store.recent_events()
+    )
+
+    store.undo_last_review("campus6_0000_test", "reviewer-a")
+    restored = store.get_sample("campus6_0000_test")
+    assert restored["incremental_pool"] == 0
+    assert restored["incremental_reason"] == ""
