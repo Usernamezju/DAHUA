@@ -364,6 +364,7 @@ class JobManager:
         pose_command = self.settings.default_pose_command()
         student_command = self.settings.default_student_command()
         teacher_command = self.settings.default_teacher_command()
+        teacher_gpus = self.gpus.teacher_availability()
         return {
             "video_preview": {
                 "enabled": bool(self.settings.ffmpeg),
@@ -380,8 +381,22 @@ class JobManager:
             "manual_review": {"enabled": True, "reason": ""},
             "dataset_export": {"enabled": True, "reason": ""},
             "qwen_teacher": {
-                "enabled": bool(teacher_command),
-                "reason": "" if teacher_command else "尚未配置 Qwen 模型或教师 Python 环境",
+                "enabled": bool(teacher_command) and teacher_gpus["enabled"],
+                "reason": (
+                    "" if (teacher_command and teacher_gpus["enabled"])
+                    else (
+                        "尚未配置服务器 Qwen 模型或教师 Python 环境"
+                        if not teacher_command else
+                        "Qwen3-VL-32B 需要 {} 张空闲 GPU（每张至少 {} MiB、利用率不高于 {}%）；当前可用：{}"
+                        .format(
+                            teacher_gpus["required_gpu_count"],
+                            teacher_gpus["minimum_free_memory_mb"],
+                            teacher_gpus["maximum_utilization_percent"],
+                            teacher_gpus["idle_gpu_ids"] or "无",
+                        )
+                    )
+                ),
+                "gpu_admission": teacher_gpus,
             },
             "live_camera": {"enabled": False, "reason": "第一阶段只处理服务器文件"},
         }
@@ -575,7 +590,7 @@ class JobManager:
                             }
                         )
                         gate["teacher_available"] = bool(
-                            self.settings.default_teacher_command()
+                            self.capability_state()["qwen_teacher"]["enabled"]
                         )
                         gate["teacher_called"] = False
                         blocked_prediction = {
@@ -672,7 +687,7 @@ class JobManager:
                 )
                 gate["pose_metrics"] = pose_metrics
                 teacher_command_available = bool(
-                    self.settings.default_teacher_command()
+                    self.capability_state()["qwen_teacher"]["enabled"]
                 )
                 gate["teacher_available"] = teacher_command_available
                 gate["teacher_called"] = bool(
@@ -848,8 +863,19 @@ class JobManager:
         teacher_command = render_command(
             self.settings.default_teacher_command(), **values
         )
+        admission = self.gpus.teacher_availability()
+        if not admission["enabled"]:
+            raise RuntimeError(
+                "Qwen GPU admission rejected: {} card(s) are required, idle GPUs are {}"
+                .format(admission["required_gpu_count"], admission["idle_gpu_ids"])
+            )
         with self.teacher_gpu_slot():
-            return self._execute(teacher_command)
+            return self._execute(
+                teacher_command,
+                extra_env=self.gpus.teacher_process_environment(
+                    admission["gpu_ids"]
+                ),
+            )
 
     def _ensure_preview(self, source: Path, destination: Path, logs: List[str]) -> None:
         if source.suffix.lower() == ".mp4":

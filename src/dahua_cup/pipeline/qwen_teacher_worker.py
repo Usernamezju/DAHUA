@@ -8,7 +8,9 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from dahua_cup.feature_extraction.semantic_graph import summarize_pose_feature
+from dahua_cup.feature_extraction.semantic_graph import (
+    summarize_pose_feature as summarize_measured_pose_feature,
+)
 from dahua_cup.pipeline.common import file_hash, log_event, require_file
 from dahua_cup.paths import CONFIG_ROOT
 from dahua_cup.semantic_teacher.api.qwen3_backend import Qwen3Config, Qwen3Teacher
@@ -89,8 +91,8 @@ def load_student_hint(
 
 
 def summarize_pose_feature(sample_id: str, path: str | Path) -> dict:
-    """Backward-compatible teacher entry point for the shared measurement logic."""
-    return summarize_pose_feature(sample_id, path)
+    """Teacher entry point for the shared, measured Campus6 pose evidence."""
+    return summarize_measured_pose_feature(sample_id, path)
 
 
 def main(argv=None) -> None:

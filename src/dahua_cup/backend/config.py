@@ -199,5 +199,33 @@ class Settings:
                 f"--label-map {shlex.quote(str(labels))} --device {{device}}")
 
     def default_teacher_command(self) -> str:
-        """Qwen is an externally configured service; no snapshot is bundled."""
-        return self.teacher_command
+        """Build an on-server Qwen command without downloading model weights.
+
+        An explicit command still wins, which permits a remote inference
+        service.  Otherwise a deployment running on the competition server
+        discovers the shared Qwen3-VL-32B snapshot and invokes it lazily.
+        """
+        if self.teacher_command:
+            return self.teacher_command
+        default_model = Path("/workspace/data/public_data/Qwen3-VL-32B-Instruct")
+        model_dir = Path(
+            os.environ.get("DAHUA_QWEN_MODEL_DIR", str(default_model))
+        ).expanduser()
+        default_python = Path("/workspace/code/envs/llm_env/bin/python")
+        teacher_python = Path(
+            os.environ.get("DAHUA_TEACHER_PYTHON", str(default_python))
+        ).expanduser()
+        if not model_dir.is_dir() or not teacher_python.is_file():
+            return ""
+        labels = CONFIG_ROOT / "campus" / "campus6_labels.txt"
+        dtype = os.environ.get("DAHUA_QWEN_DTYPE", "float16").strip()
+        if dtype not in {"float16", "bfloat16", "float32"}:
+            raise ValueError("DAHUA_QWEN_DTYPE must be float16, bfloat16 or float32")
+        return (
+            f"{shlex.quote(str(teacher_python))} -m dahua_cup.pipeline.qwen_teacher_worker "
+            "--sample-id {sample_id} --feature {feature} --pose-video {pose_video} "
+            "--student-json {prediction} --output {teacher} "
+            f"--model-dir {shlex.quote(str(model_dir))} "
+            f"--label-map {shlex.quote(str(labels))} --dtype {shlex.quote(dtype)} "
+            "--device-map auto --attn-implementation sdpa --max-frames 8 --max-new-tokens 512"
+        )

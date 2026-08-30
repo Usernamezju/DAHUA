@@ -115,6 +115,46 @@ class GPUManager:
             "pose_runtime": "RTMPose on CPU",
         }
 
+    def teacher_availability(self) -> dict:
+        """Return GPUs that are genuinely idle enough for the server Qwen model.
+
+        Qwen3-VL-32B is loaded from the server's shared model volume in fp16,
+        so it needs multiple almost-empty 24 GiB cards.  This is deliberately
+        a conservative admission check: it avoids evicting other users' jobs.
+        """
+        required = max(1, int(os.environ.get("DAHUA_QWEN_MIN_GPUS", "3")))
+        minimum_free = max(
+            1, int(os.environ.get("DAHUA_QWEN_MIN_FREE_MEMORY_MB", "20000"))
+        )
+        maximum_utilization = max(
+            0, min(100, int(os.environ.get("DAHUA_QWEN_MAX_UTILIZATION", "10")))
+        )
+        idle = [
+            gpu for gpu in self.discover()
+            if gpu["memory_total_mb"] - gpu["memory_used_mb"] >= minimum_free
+            and gpu["utilization_gpu_percent"] <= maximum_utilization
+        ]
+        selected = [gpu["index"] for gpu in idle[:required]]
+        return {
+            "enabled": len(selected) == required,
+            "gpu_ids": selected,
+            "required_gpu_count": required,
+            "minimum_free_memory_mb": minimum_free,
+            "maximum_utilization_percent": maximum_utilization,
+            "idle_gpu_ids": [gpu["index"] for gpu in idle],
+        }
+
+    @staticmethod
+    def teacher_process_environment(gpu_ids: List[int]) -> dict:
+        if not gpu_ids:
+            raise ValueError("Qwen requires at least one selected GPU")
+        visible = ",".join(str(value) for value in gpu_ids)
+        return {
+            "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+            "CUDA_VISIBLE_DEVICES": visible,
+            "DAHUA_QWEN_GPU_IDS": visible,
+        }
+
     def update(self, pose_gpu_ids, student_gpu_ids) -> dict:
         pose = []
         student = _unique_gpu_ids(student_gpu_ids)
