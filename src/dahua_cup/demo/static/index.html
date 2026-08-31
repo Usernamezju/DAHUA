@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0b111d">
+  <title>行为识别演示</title>
+  <link rel="stylesheet" href="/styles.css?v=20260831-demo-v1">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark"><span></span><span></span><span></span></div>
+        <div><strong>行为识别演示</strong><small>Behavior Recognition Demo</small></div>
+      </div>
+      <nav id="main-nav">
+        <button class="nav-item active" data-view="samples" title="演示样本"><i>▦</i><span>演示样本</span></button>
+        <button class="nav-item" data-view="import" title="导入视频"><i>⇪</i><span>导入视频</span></button>
+      </nav>
+      <div class="sample-groups" id="sample-groups"></div>
+      <div class="sidebar-foot">
+        <div class="server-state"><span id="server-dot"></span><div><strong id="server-label">正在连接</strong><small>演示服务</small></div></div>
+        <div class="version">DAHUA Demo · v0.1</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">校园行为语义理解 · 独立演示</p>
+          <h1 id="page-title">演示样本</h1>
+        </div>
+        <div class="top-actions">
+          <span class="status-pill online" id="health-pill">连接中</span>
+        </div>
+      </header>
+
+      <section class="page active" id="view-samples">
+        <div class="toolbar panel compact">
+          <div class="sample-browser">
+            <label>当前样本</label>
+            <strong id="current-sample">请选择样本</strong>
+          </div>
+          <div class="stat-inline"><strong id="sample-total">0</strong><span>个演示样本</span></div>
+          <div class="toolbar-spacer"></div>
+          <span class="status-pill" id="sample-pill">—</span>
+        </div>
+
+        <div class="result-grid">
+          <article class="panel video-panel">
+            <div class="panel-head"><div><span class="panel-kicker">ORIGINAL RGB</span><h3>原始 RGB 视频</h3></div><span class="artifact-tag" id="rgb-status">等待选择</span></div>
+            <div class="video-frame rgb"><video id="rgb-video" controls loop playsinline></video><div class="video-placeholder">选择左侧样本查看原始视频</div></div>
+          </article>
+          <article class="panel video-panel">
+            <div class="panel-head"><div><span class="panel-kicker">SKELETON STREAM</span><h3>骨架流视频</h3></div><span class="artifact-tag" id="pose-status">等待选择</span></div>
+            <div class="video-frame pose"><video id="pose-video" controls loop playsinline></video><div class="video-placeholder">RTMPose COCO-17 双人骨架</div></div>
+          </article>
+          <article class="panel evidence-panel">
+            <div class="panel-head"><div><span class="panel-kicker">FINAL RESULT</span><h3>最终推理结果</h3></div><span class="model-chip">M1KD · INT8</span></div>
+            <div id="final-result" class="final-result empty-state">请选择样本</div>
+            <div id="prediction-list" class="prediction-list empty-state">尚无预测结果</div>
+          </article>
+        </div>
+      </section>
+
+      <section class="page" id="view-import">
+        <article class="panel import-panel">
+          <div class="panel-head"><div><span class="panel-kicker">IMPORT VIDEO</span><h3>导入视频</h3><p class="muted">上传视频后自动执行 RTMPose 骨架提取与 M1KD INT8 推理，结果加入左侧「导入视频」分组。</p></div></div>
+          <label class="drop-zone" id="drop-zone" for="import-file">
+            <input type="file" id="import-file" accept="video/mp4,video/avi,video/quicktime,video/x-matroska,video/webm" hidden>
+            <div class="drop-icon">⇪</div>
+            <strong>点击选择或拖入视频文件</strong>
+            <p>支持 mp4 / avi / mov / mkv / webm</p>
+          </label>
+          <div id="import-status" class="import-status empty-state">尚未导入</div>
+        </article>
+      </section>
+    </main>
+  </div>
+  <div id="toast-root"></div>
+  <script src="/app.js?v=20260831-demo-v1" defer></script>
+</body>
+</html>

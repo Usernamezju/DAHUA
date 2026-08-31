@@ -47,6 +47,34 @@ python -m pytest
 For the optional Qwen teacher, additionally install `.[teacher]` in its
 dedicated environment and set `DAHUA_QWEN_MODEL_DIR`.
 
+## Web UI (server)
+
+Run the Web service from the repository deployed on the server:
+
+```bash
+cd /workspace/code/DAHUA
+bash scripts/run_visualization.sh
+```
+
+The launcher activates the server's `skel_gcn38` Conda environment
+automatically when it is available; otherwise it falls back to `.venv` in the
+repository.  To choose a different environment, set
+`DAHUA_VIS_VENV=/path/to/venv`.  The service listens on `0.0.0.0:8000` by
+default; set `DAHUA_VIS_PORT` to use another port.
+
+The Web process, RTMPose extraction, student inference, and Qwen teacher can
+use different server environments.  Select the built-in environment names
+(`skel_gcn38`, `rtmpose26`, or `llm_env`) per role when launching; changes take
+effect after restarting the service:
+
+```bash
+./scripts/run_visualization.sh \
+  --web-env skel_gcn38 \
+  --rtmpose-env rtmpose26 \
+  --student-env skel_gcn38 \
+  --teacher-env llm_env
+```
+
 ## Run
 
 The production Web student loads the accepted M1KD QAT INT8 checkpoint through

@@ -20,6 +20,7 @@ wandb/
 # models/MANIFEST.json; use Git LFS if they must be published.
 data/
 datasets/
+dataset/
 models/**/*.pth
 models/**/*.pt
 models/**/*.onnx

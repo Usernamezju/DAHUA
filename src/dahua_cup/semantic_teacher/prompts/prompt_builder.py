@@ -8,7 +8,7 @@ from typing import Any, Mapping
 from dahua_cup.semantic_teacher.schemas import LABELS
 
 
-PROMPT_VERSION = "campus6-v1.0"
+PROMPT_VERSION = "campus6-v1.1"
 
 
 def build_teacher_prompt(
@@ -44,16 +44,16 @@ Rules:
 - Mark unavailable evidence as unknown. Student probabilities are a fallible hint and may be corrected.
 - Every evidence item must cite an existing segment_id.
 - Return one JSON object only, matching teacher_output.v1.
-- label must be selected from Allowed labels.
+- schema_version must be exactly "teacher_output.v1".
+- Do not output label: the label is derived from distribution (its argmax) and never accepted from the model.
 - distribution may contain only the most likely labels, but returned probabilities must sum to 1; omitted allowed labels are treated as zero.
-- label must be the argmax of distribution.
-- confidence must equal distribution[label] after the listed probabilities sum to 1.
+- confidence must equal the largest probability in distribution after the listed probabilities sum to 1.
 - Set needs_review=true for weak visibility, conflicting cues, or close alternatives.
 
 INPUT:
 {json.dumps(payload, ensure_ascii=False, sort_keys=True)}
 
 OUTPUT KEYS:
-schema_version, sample_id, label, distribution, confidence, evidence,
+schema_version, sample_id, distribution, confidence, evidence,
 counter_evidence, reason, needs_review
 """

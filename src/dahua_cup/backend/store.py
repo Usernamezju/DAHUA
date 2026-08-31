@@ -24,6 +24,7 @@ SUGGESTION_TO_LABEL = {
     "normal_walk": "normal_walk",
     "normal_run": "normal_run",
 }
+INTERRUPTED_JOB_MESSAGE = "Web 服务重启，任务已安全中止"
 
 
 SCHEMA = """
@@ -512,8 +513,10 @@ class ReviewStore:
         status: Optional[str] = None,
         dataset: Optional[str] = None,
         query: Optional[str] = None,
+        workflow_status: Optional[str] = None,
         offset: int = 0,
         limit: int = 50,
+        summary: bool = False,
     ) -> dict:
         where = []
         values: List[object] = []
@@ -527,23 +530,54 @@ class ReviewStore:
             where.append("(sample_id LIKE ? OR source_label LIKE ? OR video_path LIKE ?)")
             pattern = f"%{query}%"
             values.extend((pattern, pattern, pattern))
+        if workflow_status and workflow_status != "all":
+            active_teacher_job = (
+                "EXISTS (SELECT 1 FROM jobs "
+                "WHERE jobs.sample_id = samples.sample_id "
+                "AND jobs.action = 'teacher' "
+                "AND jobs.status IN ('queued', 'running'))"
+            )
+            if workflow_status == "complete":
+                where.append("status != 'pending'")
+            elif workflow_status == "waiting_teacher":
+                where.extend(("status = 'pending'", active_teacher_job))
+            elif workflow_status == "waiting_human":
+                where.extend(("status = 'pending'", f"NOT {active_teacher_job}"))
+            else:
+                raise ValueError(f"unsupported workflow status: {workflow_status}")
         clause = f"WHERE {' AND '.join(where)}" if where else ""
         limit = max(1, min(int(limit), 200))
         offset = max(0, int(offset))
+        columns = (
+            "sample_id, source_dataset, source_label, suggested_coarse_label, "
+            "suggested_label, status, priority, manual_label, reviewer, "
+            "updated_at, reviewed_at, "
+            "CASE WHEN status != 'pending' THEN 'complete' "
+            "WHEN EXISTS (SELECT 1 FROM jobs "
+            "WHERE jobs.sample_id = samples.sample_id "
+            "AND jobs.action = 'teacher' "
+            "AND jobs.status IN ('queued', 'running')) THEN 'waiting_teacher' "
+            "ELSE 'waiting_human' END AS workflow_status"
+            if summary
+            else "*"
+        )
         with self.connect() as connection:
             total = connection.execute(
                 f"SELECT COUNT(*) FROM samples {clause}", values
             ).fetchone()[0]
             rows = connection.execute(
                 f"""
-                SELECT * FROM samples {clause}
+                SELECT {columns} FROM samples {clause}
                 ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END,
                          priority DESC, sample_id ASC LIMIT ? OFFSET ?
                 """,
                 (*values, limit, offset),
             ).fetchall()
         return {
-            "items": [_sample_record(dict(item)) for item in rows],
+            "items": [
+                dict(item) if summary else _sample_record(dict(item))
+                for item in rows
+            ],
             "total": total,
             "offset": offset,
             "limit": limit,
@@ -905,11 +939,11 @@ class ReviewStore:
                 """
                 UPDATE jobs
                 SET status = 'failed',
-                    message = 'Web 服务重启，任务已安全中止',
+                    message = ?,
                     finished_at = ?
                 WHERE status IN ('queued', 'running')
                 """,
-                (finished_at,),
+                (INTERRUPTED_JOB_MESSAGE, finished_at),
             )
             return int(cursor.rowcount)
 

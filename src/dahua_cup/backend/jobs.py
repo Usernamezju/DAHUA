@@ -22,7 +22,7 @@ from .baseline import Campus6Baseline
 from .config import Settings
 from .gpu import GPUManager
 from .hard_samples import evaluate_hard_sample
-from .store import ReviewStore
+from .store import INTERRUPTED_JOB_MESSAGE, ReviewStore
 
 
 ACTIONS = frozenset(("pose", "classify", "teacher", "full"))
@@ -490,6 +490,26 @@ class JobManager:
             "message": value.get("message") or "",
         }
 
+    def _auto_retry_allowed(self, sample_id: str, action: str) -> bool:
+        """Gate automatic resubmission of failed jobs in the continuous loop.
+
+        Jobs interrupted by a Web restart carry the fixed message
+        ``INTERRUPTED_JOB_MESSAGE`` and may be retried without limit; they
+        failed for environmental reasons, not because of the sample.  Other
+        failures consume a small per-sample budget so a deterministically
+        failing sample cannot occupy the queue forever.
+        """
+        jobs = self.store.get_sample(sample_id).get("jobs", [])
+        failures = [
+            job for job in jobs
+            if job.get("action") == action and job.get("status") == "failed"
+        ]
+        model_failures = [
+            job for job in failures
+            if (job.get("message") or "") != INTERRUPTED_JOB_MESSAGE
+        ]
+        return len(model_failures) < 3
+
     def _continuous_loop(self) -> None:
         self._continuous_status["state"] = "running"
         while not self._continuous_stop.is_set():
@@ -514,14 +534,27 @@ class JobManager:
                         )
                     elif (
                         (prediction.get("teacher_gate") or {}).get("triggered")
-                        and teacher.get("status") in {"not_run", "not_enabled"}
+                        and (
+                            teacher.get("status") in {"not_run", "not_enabled"}
+                            or (
+                                teacher.get("status") == "failed"
+                                and self._auto_retry_allowed(
+                                    sample_id, "teacher"
+                                )
+                            )
+                        )
                         and self.capability_state()["qwen_teacher"]["enabled"]
                     ):
                         action = "teacher"
                     else:
                         continue
                     latest = self.store.get_sample(sample_id).get("jobs", [])
-                    if latest and latest[0].get("action") == action and latest[0].get("status") == "failed":
+                    if (
+                        latest
+                        and latest[0].get("action") == action
+                        and latest[0].get("status") == "failed"
+                        and not self._auto_retry_allowed(sample_id, action)
+                    ):
                         continue
                     self.submit(sample_id, action)
                     self._continuous_status["last_sample_id"] = sample_id
@@ -538,9 +571,17 @@ class JobManager:
                     capability = self.capability_state()["qwen_teacher"]
                     if capability["enabled"]:
                         for item in self.hard_samples(limit=50)["items"]:
-                            if item.get("teacher", {}).get("status") != "not_run":
-                                continue
+                            teacher_status = item.get("teacher", {}).get("status")
                             sample_id = item["sample_id"]
+                            if teacher_status != "not_run":
+                                retryable = (
+                                    teacher_status == "failed"
+                                    and self._auto_retry_allowed(
+                                        sample_id, "teacher"
+                                    )
+                                )
+                                if not retryable:
+                                    continue
                             with self.submission_lock:
                                 if sample_id in self.active_sample_jobs:
                                     continue

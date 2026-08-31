@@ -49,6 +49,21 @@ def test_restart_marks_incomplete_jobs_failed(tmp_path):
     assert recovered["finished_at"]
 
 
+def test_sample_summary_omits_video_and_pseudo_record_payload(tmp_path):
+    store = ReviewStore(tmp_path / "review.sqlite3")
+    store.import_baseline_records([_record()])
+
+    result = store.list_samples(summary=True)
+
+    assert result["total"] == 1
+    summary = result["items"][0]
+    assert summary["sample_id"] == "campus6_0000_test"
+    assert summary["source_dataset"] == "Campus6_initial"
+    assert "video_path" not in summary
+    assert "pseudo_record" not in summary
+    assert summary["workflow_status"] == "complete"
+
+
 def test_human_label_disagreement_enters_reversible_incremental_hard_pool(tmp_path):
     store = ReviewStore(tmp_path / "review.sqlite3")
     store.import_baseline_records([_record()])

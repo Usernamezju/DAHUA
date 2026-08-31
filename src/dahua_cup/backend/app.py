@@ -155,6 +155,23 @@ def _sample_payload(
     return sample
 
 
+def _sample_summary_payload(sample: dict) -> dict:
+    """Return list-view metadata without loading per-sample artefacts."""
+    return {
+        "sample_id": sample["sample_id"],
+        "source_dataset": sample.get("source_dataset", ""),
+        "source_label": sample.get("source_label", ""),
+        "suggested_coarse_label": sample.get("suggested_coarse_label", ""),
+        "suggested_label": sample.get("suggested_label"),
+        "status": sample.get("status", "pending"),
+        "workflow_status": sample.get("workflow_status", "complete"),
+        "priority": sample.get("priority", 0),
+        "manual_label": sample.get("manual_label"),
+        "reviewer": sample.get("reviewer"),
+        "produced_at": sample.get("reviewed_at") or sample.get("updated_at"),
+    }
+
+
 def create_app(settings: Optional[Settings] = None) -> FastAPI:
     settings = settings or Settings.from_env()
 
@@ -314,13 +331,24 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         status: Optional[str] = None,
         dataset: Optional[str] = None,
         query: Optional[str] = None,
+        workflow_status: Optional[str] = None,
         offset: int = 0,
         limit: int = Query(default=50, ge=1, le=200),
+        summary: bool = False,
     ):
         result = request.app.state.store.list_samples(
-            status=status, dataset=dataset, query=query, offset=offset, limit=limit
+            status=status,
+            dataset=dataset,
+            query=query,
+            workflow_status=workflow_status,
+            offset=offset,
+            limit=limit,
+            summary=summary,
         )
-        result["items"] = [_sample_payload(request.app, item) for item in result["items"]]
+        if summary:
+            result["items"] = [_sample_summary_payload(item) for item in result["items"]]
+        else:
+            result["items"] = [_sample_payload(request.app, item) for item in result["items"]]
         return result
 
     @app.get("/api/samples/{sample_id}")
@@ -466,16 +494,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     def frontend(frontend_path: str, request: Request):
         root: Path = request.app.state.settings.frontend_root
         requested = root / frontend_path
-        cache_headers = {
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "Pragma": "no-cache",
-        }
         if frontend_path and requested.is_file() and path_is_within(requested, root):
+            cache_headers = (
+                {"Cache-Control": "public, max-age=31536000, immutable"}
+                if requested.suffix in {".css", ".js"}
+                else {"Cache-Control": "no-cache"}
+            )
             return FileResponse(requested, headers=cache_headers)
         index = root / "index.html"
         if not index.is_file():
             raise HTTPException(status_code=404, detail="frontend is not built")
-        return FileResponse(index, headers=cache_headers)
+        return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
     return app
 

@@ -36,35 +36,56 @@ def extract_json_object(text: str) -> dict[str, Any]:
     return value
 
 
+SCHEMA_VERSION_ALIASES = {"v1": "teacher_output.v1"}
+
+
 def parse_teacher_output(
     value: Mapping[str, Any], allowed_labels: Sequence[str]
-) -> tuple[TeacherOutput, float | None]:
-    """Validate a teacher response and canonicalize sparse-distribution confidence.
+) -> tuple[TeacherOutput, dict[str, Any] | None]:
+    """Validate a teacher response and canonicalize it.
 
-    The prompt permits a sparse distribution, which the schema normalizes over
-    the full closed set.  A model can therefore report a selected-label
-    confidence that was correct before normalization but differs afterwards.
-    Keep that raw, uncalibrated value in provenance while using the normalized
+    The prompt contract no longer asks the model for a label: the label is
+    derived deterministically as the argmax of the distribution, so the two
+    fields can never disagree.  Responses that still carry a label (older
+    prompts, or a model that insists) are canonicalized the same way, with a
+    conflicting raw label preserved in provenance for audit.
+
+    The prompt permits a sparse distribution, which the schema normalizes
+    over the full closed set.  A model can therefore report a confidence
+    that was correct before normalization but differs afterwards.  Keep that
+    raw, uncalibrated value in provenance while using the normalized
     selected-label probability everywhere the schema requires confidence.
     Other schema violations remain hard failures and are retried.
     """
-    try:
-        return TeacherOutput.from_dict(value, allowed_labels=allowed_labels), None
-    except ValueError as exc:
-        if str(exc) != "confidence must match the selected label probability":
-            raise
     candidate = dict(value)
-    label = str(candidate.get("label", ""))
+    repairs: dict[str, Any] = {}
+
+    raw_schema = candidate.get("schema_version")
+    if isinstance(raw_schema, str) and raw_schema in SCHEMA_VERSION_ALIASES:
+        candidate["schema_version"] = SCHEMA_VERSION_ALIASES[raw_schema]
+        repairs["schema_version_normalized_from"] = raw_schema
+
     distribution = normalize_distribution(
         candidate.get("distribution", {}), allowed_labels
     )
-    candidate["confidence"] = distribution.get(label, -1.0)
-    output = TeacherOutput.from_dict(candidate, allowed_labels=allowed_labels)
+    derived_label = max(distribution, key=distribution.get)
+    raw_label = candidate.get("label")
+    if raw_label is not None and str(raw_label) != derived_label:
+        repairs["raw_label"] = raw_label
+    candidate["label"] = derived_label
+
     try:
-        raw_confidence = float(value.get("confidence"))
-    except (TypeError, ValueError):
-        raw_confidence = None
-    return output, raw_confidence
+        output = TeacherOutput.from_dict(candidate, allowed_labels=allowed_labels)
+    except ValueError as exc:
+        if str(exc) != "confidence must match the selected label probability":
+            raise
+        candidate["confidence"] = distribution.get(derived_label, -1.0)
+        output = TeacherOutput.from_dict(candidate, allowed_labels=allowed_labels)
+        try:
+            repairs["raw_confidence"] = float(value.get("confidence"))
+        except (TypeError, ValueError):
+            pass
+    return output, (repairs or None)
 
 
 def local_video_reference(path: str | Path) -> str:
@@ -242,7 +263,7 @@ class Qwen3Teacher:
             raise ValueError("teacher retries must be non-negative")
         response = ""
         result = None
-        raw_confidence = None
+        repairs = None
         attempts = 0
         for attempts in range(1, self.config.retries + 2):
             if video_frames is None:
@@ -279,7 +300,7 @@ class Qwen3Teacher:
                 generated[:, input_length:], skip_special_tokens=True
             )[0]
             try:
-                result, raw_confidence = parse_teacher_output(
+                result, repairs = parse_teacher_output(
                     extract_json_object(response), allowed_labels=labels
                 )
                 break
@@ -315,12 +336,22 @@ class Qwen3Teacher:
             "raw_response_hash": hashlib.sha256(response.encode()).hexdigest(),
             "attempts": attempts,
         }
-        if raw_confidence is not None:
-            provenance["raw_confidence"] = raw_confidence
-            provenance["confidence_method"] = (
-                "normalized_teacher_distribution; "
-                "raw_confidence_preserved_uncalibrated"
-            )
+        provenance["label_method"] = "distribution_argmax"
+        if repairs:
+            if "raw_confidence" in repairs:
+                provenance["raw_confidence"] = repairs["raw_confidence"]
+                provenance["confidence_method"] = (
+                    "normalized_teacher_distribution; "
+                    "raw_confidence_preserved_uncalibrated"
+                )
+            else:
+                provenance["confidence_method"] = "teacher_self_report_uncalibrated"
+            if "raw_label" in repairs:
+                provenance["raw_label"] = repairs["raw_label"]
+            if "schema_version_normalized_from" in repairs:
+                provenance["schema_version_normalized_from"] = repairs[
+                    "schema_version_normalized_from"
+                ]
         else:
             provenance["confidence_method"] = "teacher_self_report_uncalibrated"
         if video_provenance is not None:

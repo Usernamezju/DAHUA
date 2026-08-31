@@ -15,7 +15,8 @@ const SAMPLE_STATUS_GROUPS = [
 
 const state = {
   capabilities: {}, system: {}, gpus: {}, macroParameters: {}, dashboard: {}, modelStatus: {}, trainingStatus: {}, samples: [], reviewSamples: [],
-  hardSamples: [], hardTotal: 0, hardSample: null,
+  sampleTotal: 0, reviewTotal: 0,
+  hardSamples: [], hardTotal: 0, hardSample: null, hardLoaded: false,
   inferenceSample: null, reviewSample: null, reviewIndex: -1,
   activeJobId: null, jobSubmissionPending: false,
   datasetPage: 0, datasetPageSize: 50, datasetTotal: 0,
@@ -71,7 +72,8 @@ function setPage(page) {
   $("#page-title").textContent = titles[page];
   history.replaceState(null, "", `#${page}`);
   if (page === "dataset") loadDatasetPage();
-  if (page === "hard" && !state.hardSample && state.hardSamples.length) selectHardSample(state.hardSamples[0].sample_id);
+  if (page === "hard" && !state.hardLoaded) loadHardSamples();
+  else if (page === "hard" && !state.hardSample && state.hardSamples.length) selectHardSample(state.hardSamples[0].sample_id);
 }
 
 function reviewer() {
@@ -81,37 +83,37 @@ function reviewer() {
   return value;
 }
 
-async function fetchAllSamples(params = {}) {
-  const query = new URLSearchParams({...params, offset: 0, limit: 200});
-  const first = await api(`/api/samples?${query}`);
-  const items = [...first.items];
-  for (let offset = 200; offset < first.total; offset += 200) {
-    query.set("offset", offset);
-    items.push(...(await api(`/api/samples?${query}`)).items);
-  }
-  return items;
+async function fetchSampleSummaries(params = {}) {
+  const query = new URLSearchParams({summary:"true", offset:0, limit:50, ...params});
+  return api(`/api/samples?${query}`);
 }
 
-async function fetchAllHardSamples() {
-  const first=await api("/api/hard-samples?offset=0&limit=200"),items=[...first.items];
-  for(let offset=200;offset<first.total;offset+=200){items.push(...(await api(`/api/hard-samples?offset=${offset}&limit=200`)).items);}
-  return {total:first.total,items};
+async function loadInferenceSamples(query = "") {
+  const result = await fetchSampleSummaries({query});
+  state.samples = result.items;
+  state.sampleTotal = result.total;
+  renderSampleOptions();
 }
 
 async function refreshAll(preserveSelection = true) {
   try {
-    const [capabilities, system, gpus, macroParameters, dashboard, modelStatus, trainingStatus, samples, reviewSamples, hard] = await Promise.all([
+    const [capabilities, system, gpus, macroParameters, dashboard, modelStatus, trainingStatus, samples, reviewSamples] = await Promise.all([
       api("/api/capabilities"), api("/api/system"), api("/api/gpus"), api("/api/macro-parameters"), api("/api/dashboard"), api("/api/models/status"), api("/api/training/status"),
-      fetchAllSamples(), fetchAllSamples({status:"pending"}), fetchAllHardSamples(),
+      fetchSampleSummaries(), fetchSampleSummaries({status:"pending"}),
     ]);
-    Object.assign(state, {capabilities, system, gpus, macroParameters, dashboard, modelStatus, trainingStatus, samples, reviewSamples, hardSamples:hard.items, hardTotal:hard.total});
+    Object.assign(state, {
+      capabilities, system, gpus, macroParameters, dashboard, modelStatus, trainingStatus,
+      samples: samples.items, sampleTotal: samples.total,
+      reviewSamples: reviewSamples.items, reviewTotal: reviewSamples.total,
+      hardSamples: [], hardTotal: 0, hardSample: null, hardLoaded: false,
+    });
     $("#server-dot").classList.add("online");
     $("#server-label").textContent = "服务器在线";
     renderDashboard(); renderCapabilities(); renderSampleOptions(); renderHardOptions(); renderModels(); renderTrainingStatus(); renderSettings();
     if (!preserveSelection || !state.inferenceSample) {
-      if (samples.length) await selectInference(samples[0].sample_id, false);
+      if (state.samples.length) await selectInference(state.samples[0].sample_id, false);
     } else {
-      const current = samples.find(item => item.sample_id === state.inferenceSample.sample_id);
+      const current = state.samples.find(item => item.sample_id === state.inferenceSample.sample_id);
       if (current) await selectInference(current.sample_id, false);
     }
   } catch (error) {
@@ -340,6 +342,19 @@ function renderHardTeacher(teacher) {
   renderSixDistribution(distribution,null,"尚无教师六类分布");
 }
 
+async function loadHardSamples() {
+  try {
+    const hard = await api("/api/hard-samples?offset=0&limit=50");
+    state.hardSamples = hard.items;
+    state.hardTotal = hard.total;
+    state.hardLoaded = true;
+    renderHardOptions();
+    if (!state.hardSample && hard.items.length) await selectHardSample(hard.items[0].sample_id);
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
 async function selectHardSample(sampleId) {
   const item=state.hardSamples.find(value=>value.sample_id===sampleId);if(!item)return;
   state.hardSample=item;renderHardOptions();
@@ -417,12 +432,12 @@ function renderLabelButtons() {
 async function loadDatasetPage() {
   const status=$("#dataset-status").value,dataset=$("#dataset-source").value,query=$("#dataset-search").value.trim();
   try{
-    const lowered=query.toLowerCase();
-    const filtered=state.samples.filter(item=>(status==="all"||item.workflow_status===status)&&(dataset==="all"||item.source_dataset===dataset)&&(!lowered||`${item.sample_id} ${item.source_dataset} ${item.prediction?.topk?.[0]?.label||""} ${item.teacher?.result?.label||""} ${item.manual_label||""}`.toLowerCase().includes(lowered)));
-    state.datasetTotal=filtered.length;$("#dataset-total").textContent=filtered.length;
-    const start=state.datasetPage*state.datasetPageSize,items=filtered.slice(start,start+state.datasetPageSize);
-    $("#dataset-table").innerHTML=items.map(item=>`<tr><td><strong>${escapeHtml(item.sample_id)}</strong></td><td>${escapeHtml(item.source_dataset)}</td><td>${escapeHtml(LABEL_NAME[item.prediction?.topk?.[0]?.label]||item.prediction?.topk?.[0]?.label||"处理中")}</td><td>${escapeHtml(LABEL_NAME[item.teacher?.result?.label]||item.teacher?.result?.label||"—")}</td><td>${escapeHtml(LABEL_NAME[item.manual_label]||item.manual_label||"—")}</td><td>${formatTime(item.produced_at)}</td><td><span class="state-badge ${item.workflow_status}">${titleForStatus(item.workflow_status)}</span></td><td><button class="table-action" data-open-review="${escapeHtml(item.sample_id)}">查看</button></td></tr>`).join("");
-    const pages=Math.max(1,Math.ceil(filtered.length/state.datasetPageSize));if(state.datasetPage>=pages){state.datasetPage=pages-1;return loadDatasetPage();}$("#page-info").textContent=`第 ${state.datasetPage+1} / ${pages} 页`;$("#page-prev").disabled=state.datasetPage===0;$("#page-next").disabled=state.datasetPage+1>=pages;
+    const result=await fetchSampleSummaries({workflow_status:status,dataset,query,offset:state.datasetPage*state.datasetPageSize,limit:state.datasetPageSize});
+    const pages=Math.max(1,Math.ceil(result.total/state.datasetPageSize));if(state.datasetPage>=pages){state.datasetPage=pages-1;return loadDatasetPage();}
+    const items=result.items;
+    state.datasetTotal=result.total;$("#dataset-total").textContent=result.total;
+    $("#dataset-table").innerHTML=items.map(item=>`<tr><td><strong>${escapeHtml(item.sample_id)}</strong></td><td>${escapeHtml(item.source_dataset)}</td><td>${escapeHtml(LABEL_NAME[item.suggested_label]||item.suggested_label||"处理中")}</td><td>按需查看</td><td>${escapeHtml(LABEL_NAME[item.manual_label]||item.manual_label||"—")}</td><td>${formatTime(item.produced_at)}</td><td><span class="state-badge ${item.workflow_status}">${titleForStatus(item.workflow_status)}</span></td><td><button class="table-action" data-open-review="${escapeHtml(item.sample_id)}">查看</button></td></tr>`).join("");
+    $("#page-info").textContent=`第 ${state.datasetPage+1} / ${pages} 页`;$("#page-prev").disabled=state.datasetPage===0;$("#page-next").disabled=state.datasetPage+1>=pages;
     $$("[data-open-review]").forEach(button=>button.onclick=async()=>{setPage("inference");await selectInference(button.dataset.openReview);});
   }catch(error){toast(error.message,true);}
 }
@@ -572,7 +587,8 @@ function bindEvents() {
   $("#sample-tree-toggle").onclick=event=>{event.stopPropagation();setSampleTreeOpen($("#sample-tree-menu").classList.contains("hidden"))};
   $("#sample-tree-menu").onclick=event=>event.stopPropagation();
   $("#inference-search").onclick=event=>{event.stopPropagation();setSampleTreeOpen(true)};
-  $("#inference-search").oninput=()=>{renderSampleOptions();setSampleTreeOpen(true)};
+  let inferenceSearchTimer;
+  $("#inference-search").oninput=event=>{clearTimeout(inferenceSearchTimer);inferenceSearchTimer=setTimeout(()=>loadInferenceSamples(event.target.value.trim()),250);setSampleTreeOpen(true)};
   document.addEventListener("click",()=>setSampleTreeOpen(false));
   if($("#refresh-gpus"))$("#refresh-gpus").onclick=refreshGpus;
   if($("#save-gpu-settings"))$("#save-gpu-settings").onclick=saveGpuSettings;
