@@ -332,6 +332,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         except (ValueError, OSError, subprocess.SubprocessError) as exc:
             raise HTTPException(status_code=422, detail="Qwen 云端连接失败：{}".format(str(exc)[:240])) from exc
 
+    @app.post("/api/qwen-remote/provision")
+    def provision_qwen_remote(request: Request):
+        try:
+            request.app.state.jobs.provision_qwen_remote()
+            return {"ok": True}
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            raise HTTPException(status_code=422, detail="Qwen 云端初始化失败：{}".format(str(exc)[:240])) from exc
+
     @app.get("/api/macro-parameters")
     def macro_parameters(request: Request):
         return snapshot(request.app.state.settings)

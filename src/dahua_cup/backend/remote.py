@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import posixpath
 import re
 import shlex
 import subprocess
@@ -85,6 +87,39 @@ def test_connection(config: dict[str, Any]) -> None:
     )
 
 
+def provision_remote(config: dict[str, Any]) -> None:
+    """Create/update the remote checkout and its project-local Qwen venv."""
+    if not config["enabled"]:
+        raise ValueError("请先启用 Qwen 云端连接")
+    root = config["project_root"].rstrip("/")
+    repository = os.environ.get(
+        "DAHUA_REMOTE_REPOSITORY_URL", "https://github.com/Usernamezju/DAHUA.git"
+    )
+    script = """set -eu
+if test -d {root}/.git; then
+  cd {root}
+  git pull --ff-only
+else
+  mkdir -p {parent}
+  git clone {repository} {root}
+  cd {root}
+fi
+if ! test -x .venv-qwen/bin/python; then
+  python3 -m venv .venv-qwen
+fi
+.venv-qwen/bin/python -m pip install --upgrade pip
+.venv-qwen/bin/python -m pip install -r requirements/server.txt
+""".format(
+        root=shlex.quote(root), parent=shlex.quote(posixpath.dirname(root)),
+        repository=shlex.quote(repository),
+    )
+    subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-p", str(config["port"]), _target(config), "sh -lc " + shlex.quote(script)],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, timeout=1800,
+    )
+
+
 def run_remote_qwen(config: dict[str, Any], sample_id: str, paths: dict[str, Path]) -> None:
     """Run the worker relative to the remote root using its own environment."""
     if not config["enabled"]:
@@ -112,7 +147,7 @@ def run_remote_qwen(config: dict[str, Any], sample_id: str, paths: dict[str, Pat
             text=True, timeout=300,
         )
         command = [
-            "python", "-m", "dahua_cup.pipeline.qwen_teacher_worker",
+            ".venv-qwen/bin/python", "-m", "dahua_cup.pipeline.qwen_teacher_worker",
             "--sample-id", sample_id,
             "--feature", relative_dir + "/" + paths["feature"].name,
             "--pose-video", relative_dir + "/" + paths["pose_video"].name,

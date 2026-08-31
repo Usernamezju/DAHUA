@@ -23,7 +23,11 @@ from .baseline import Campus6Baseline
 from .config import Settings
 from .gpu import GPUManager
 from .hard_samples import evaluate_hard_sample
-from .remote import run_remote_qwen, test_connection as test_qwen_remote_connection
+from .remote import (
+    provision_remote as provision_qwen_remote,
+    run_remote_qwen,
+    test_connection as test_qwen_remote_connection,
+)
 from .store import INTERRUPTED_JOB_MESSAGE, ReviewStore
 
 
@@ -686,6 +690,9 @@ class JobManager:
 
     def test_qwen_remote_connection(self) -> None:
         test_qwen_remote_connection(self.settings.qwen_remote())
+
+    def provision_qwen_remote(self) -> None:
+        provision_qwen_remote(self.settings.qwen_remote())
 
     def submit(self, sample_id: str, action: str) -> dict:
         if action not in ACTIONS:

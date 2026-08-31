@@ -541,6 +541,7 @@ function qwenRemotePayload(){return {enabled:$("#qwen-remote-enabled").checked,h
 
 async function saveQwenRemoteSettings(){try{state.qwenRemote=await api("/api/qwen-remote",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(qwenRemotePayload())});renderQwenRemoteSettings();state.capabilities=await api("/api/capabilities");renderCapabilities();toast("Qwen 云端连接已保存，后续任务立即生效");}catch(error){toast(error.message,true)}}
 async function testQwenRemoteSettings(){try{await saveQwenRemoteSettings();await api("/api/qwen-remote/test",{method:"POST"});toast("Qwen 云端 SSH 连接和项目根目录验证成功");}catch(error){toast(error.message,true)}}
+async function provisionQwenRemote(){try{await saveQwenRemoteSettings();const button=$("#provision-qwen-remote");button.disabled=true;button.textContent="正在初始化…";await api("/api/qwen-remote/provision",{method:"POST"});toast("云端代码与 Qwen 虚拟环境已初始化");}catch(error){toast(error.message,true)}finally{const button=$("#provision-qwen-remote");if(button){button.disabled=false;button.textContent="初始化云端环境";}}}
 
 function macroInputAttrs(type) {
   if (type === "unit_interval") return 'step="0.01" min="0" max="1"';
@@ -660,6 +661,7 @@ function bindEvents() {
   if($("#save-gpu-settings"))$("#save-gpu-settings").onclick=saveGpuSettings;
   if($("#save-qwen-remote"))$("#save-qwen-remote").onclick=saveQwenRemoteSettings;
   if($("#test-qwen-remote"))$("#test-qwen-remote").onclick=testQwenRemoteSettings;
+  if($("#provision-qwen-remote"))$("#provision-qwen-remote").onclick=provisionQwenRemote;
   if($("#teacher-gpu-auto"))$("#teacher-gpu-auto").onchange=event=>$$('input[data-gpu-kind="teacher"]').forEach(input=>input.disabled=event.target.checked);
   if($("#apply-macro-parameters"))$("#apply-macro-parameters").onclick=applyMacroParameters;
   if($("#reset-macro-parameters"))$("#reset-macro-parameters").onclick=resetMacroParameters;

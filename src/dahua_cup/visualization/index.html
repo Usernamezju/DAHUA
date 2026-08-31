@@ -152,7 +152,7 @@
 
       <section class="page" id="page-settings">
         <article class="panel settings-panel qwen-remote-settings">
-          <div class="panel-head"><div><span class="panel-kicker">REMOTE QWEN</span><h3>云端大模型连接</h3><p>凭据使用本机 SSH 密钥或 SSH 配置；页面不保存密码。云端环境自行管理 Python、CUDA 与 Qwen 权重。</p></div></div>
+          <div class="panel-head"><div><span class="panel-kicker">REMOTE QWEN</span><h3>云端大模型连接</h3><p>凭据使用本机 SSH 密钥或 SSH 配置；页面不保存密码。初始化会在项目根目录拉取代码、创建 <code>.venv-qwen</code> 并安装服务器依赖；CUDA 与 Qwen 权重由云端环境管理。</p></div></div>
           <div class="settings-grid">
             <label class="setting-item"><span>启用云端 Qwen</span><input id="qwen-remote-enabled" type="checkbox"></label>
             <label class="setting-item"><span>SSH 主机 / 别名</span><input id="qwen-remote-host" placeholder="Lab133_Docker 或 10.0.0.1"></label>
@@ -160,7 +160,7 @@
             <label class="setting-item"><span>SSH 用户名</span><input id="qwen-remote-user" placeholder="root"></label>
             <label class="setting-item full"><span>云端项目根目录</span><input id="qwen-remote-root" placeholder="/workspace/code/DAHUA"></label>
           </div>
-          <div class="gpu-settings-foot"><p class="muted">任务仅传输骨架特征、骨架视频和学生结果；云端临时文件位于项目根目录的 <code>.runtime/qwen-remote/</code>。</p><div class="gpu-actions"><button id="test-qwen-remote" class="button secondary">测试连接</button><button id="save-qwen-remote" class="button primary">保存云端设置</button></div></div>
+          <div class="gpu-settings-foot"><p class="muted">任务仅传输骨架特征、骨架视频和学生结果；云端临时文件位于项目根目录的 <code>.runtime/qwen-remote/</code>。</p><div class="gpu-actions"><button id="test-qwen-remote" class="button secondary">测试连接</button><button id="provision-qwen-remote" class="button secondary">初始化云端环境</button><button id="save-qwen-remote" class="button primary">保存云端设置</button></div></div>
         </article>
         <article class="panel settings-panel macro-settings-panel">
           <div id="macro-grid" class="macro-grid"></div>
