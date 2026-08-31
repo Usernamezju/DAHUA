@@ -7,10 +7,12 @@ import math
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -323,6 +325,10 @@ class JobManager:
         self.teacher_active = False
         self.submission_lock = threading.Lock()
         self.active_sample_jobs: Dict[str, tuple[str, str]] = {}
+        self._shutdown = threading.Event()
+        self._process_lock = threading.Lock()
+        self._processes: Dict[int, subprocess.Popen] = {}
+        self._futures: set[Future] = set()
         self._continuous_stop = threading.Event()
         self._continuous_thread: Optional[threading.Thread] = None
         self._continuous_status = {
@@ -359,6 +365,35 @@ class JobManager:
         if self._continuous_thread:
             self._continuous_thread.join(timeout=2)
         self._continuous_status["state"] = "stopped"
+
+    def shutdown(self) -> None:
+        """Stop the service-owned queue and every local worker process group."""
+        self._shutdown.set()
+        self.stop_continuous_pipeline()
+        with self.submission_lock:
+            futures = list(self._futures)
+        for future in futures:
+            future.cancel()
+        with self._process_lock:
+            processes = list(self._processes.values())
+        for process in processes:
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+        deadline = time.monotonic() + 8
+        for process in processes:
+            remaining = max(0.0, deadline - time.monotonic())
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+        self.executor.shutdown(wait=True)
 
     def continuous_status(self) -> dict:
         return dict(self._continuous_status)
@@ -747,7 +782,9 @@ class JobManager:
             )
             self.active_sample_jobs[sample_id] = (job["job_id"], action)
             try:
-                self.executor.submit(self._run, job["job_id"])
+                future = self.executor.submit(self._run, job["job_id"])
+                self._futures.add(future)
+                future.add_done_callback(self._futures.discard)
             except Exception:
                 self.active_sample_jobs.pop(sample_id, None)
                 if pose_device:
@@ -771,31 +808,51 @@ class JobManager:
                 self.active_sample_jobs.pop(sample_id, None)
 
     def _execute(self, command: List[str], extra_env: Optional[dict] = None) -> str:
+        if self._shutdown.is_set():
+            raise RuntimeError(INTERRUPTED_JOB_MESSAGE)
         environment = os.environ.copy()
         if extra_env:
             environment.update(extra_env)
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 command,
                 cwd=self.settings.repository_root,
                 env=environment,
-                check=True,
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                start_new_session=True,
             )
-        except subprocess.CalledProcessError as exc:
+        except OSError as exc:
+            raise RuntimeError("无法启动后台推理任务：{}".format(exc)) from exc
+        with self._process_lock:
+            self._processes[process.pid] = process
+        try:
+            stdout, _ = process.communicate()
+        finally:
+            with self._process_lock:
+                self._processes.pop(process.pid, None)
+        if process.returncode:
+            if self._shutdown.is_set():
+                raise RuntimeError(INTERRUPTED_JOB_MESSAGE)
             is_teacher = any(
                 "qwen_teacher_worker" in str(part) for part in command
             )
             label = "Qwen 教师分析失败" if is_teacher else "后台推理任务失败"
             raise RuntimeError(
-                "{}（退出码 {}），请稍后重试".format(label, exc.returncode)
-            ) from exc
-        return completed.stdout[-12000:]
+                "{}（退出码 {}），请稍后重试".format(label, process.returncode)
+            )
+        return (stdout or "")[-12000:]
 
     def _run(self, job_id: str) -> None:
         job = self.store.get_job(job_id)
+        if self._shutdown.is_set():
+            self.store.update_job(
+                job_id, status="failed", message=INTERRUPTED_JOB_MESSAGE,
+                finished_at=_now(),
+            )
+            self._release_active_job(job["sample_id"], job_id)
+            return
         sample = self.store.get_sample(job["sample_id"])
         paths = self.artifacts(job["sample_id"])
         paths["work_dir"].mkdir(parents=True, exist_ok=True)
@@ -1217,7 +1274,7 @@ class JobManager:
             )
         remote_teacher = self.settings.qwen_remote()
         if remote_teacher["enabled"]:
-            run_remote_qwen(remote_teacher, sample_id, paths)
+            run_remote_qwen(remote_teacher, sample_id, paths, self._execute)
             return "Qwen 云端教师分析完成"
         values = {
             key: shlex.quote(str(value))

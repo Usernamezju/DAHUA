@@ -228,8 +228,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         app.state.manifest_import = store.import_manifest(settings.manifest_path)
         app.state.jobs.start_continuous_pipeline()
         yield
-        app.state.jobs.stop_continuous_pipeline()
-        app.state.jobs.executor.shutdown(wait=False)
+        app.state.jobs.shutdown()
 
     app = FastAPI(
         title="校园行为语义理解平台",

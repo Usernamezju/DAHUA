@@ -10,7 +10,7 @@ import shlex
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 
 DEFAULT_QWEN_REMOTE = {
@@ -120,7 +120,10 @@ fi
     )
 
 
-def run_remote_qwen(config: dict[str, Any], sample_id: str, paths: dict[str, Path]) -> None:
+def run_remote_qwen(
+    config: dict[str, Any], sample_id: str, paths: dict[str, Path],
+    execute: Optional[Callable[[list[str]], str]] = None,
+) -> None:
     """Run the worker relative to the remote root using its own environment."""
     if not config["enabled"]:
         raise ValueError("Qwen 云端连接未启用")
@@ -135,17 +138,21 @@ def run_remote_qwen(config: dict[str, Any], sample_id: str, paths: dict[str, Pat
     scp = ["scp", "-o", "BatchMode=yes", "-P", str(config["port"])]
 
     def remote(script: str, *, timeout: int = 900) -> None:
+        if execute is not None:
+            execute(ssh + [script])
+            return
         subprocess.run(ssh + [script], check=True, stdout=subprocess.PIPE,
                        stderr=subprocess.STDOUT, text=True, timeout=timeout)
 
     try:
         remote("mkdir -p " + shlex.quote(remote_dir))
         uploads = [paths["feature"], paths["pose_video"], paths["prediction"]]
-        subprocess.run(
-            scp + [*(str(path) for path in uploads), target + ":" + remote_dir + "/"],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, timeout=300,
-        )
+        upload = scp + [*(str(path) for path in uploads), target + ":" + remote_dir + "/"]
+        if execute is not None:
+            execute(upload)
+        else:
+            subprocess.run(upload, check=True, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True, timeout=300)
         command = [
             ".venv-qwen/bin/python", "-m", "dahua_cup.pipeline.qwen_teacher_worker",
             "--sample-id", sample_id,
@@ -158,11 +165,12 @@ def run_remote_qwen(config: dict[str, Any], sample_id: str, paths: dict[str, Pat
             shlex.quote(root), shlex.join(command)
         ))
         paths["teacher"].parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            scp + [target + ":" + remote_dir + "/teacher.json", str(paths["teacher"])],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, timeout=120,
-        )
+        download = scp + [target + ":" + remote_dir + "/teacher.json", str(paths["teacher"])]
+        if execute is not None:
+            execute(download)
+        else:
+            subprocess.run(download, check=True, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True, timeout=120)
     finally:
         try:
             remote("rm -rf " + shlex.quote(remote_dir), timeout=30)
