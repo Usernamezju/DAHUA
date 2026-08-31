@@ -40,12 +40,16 @@ compatible with the bundled ProtoGCN code.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt
+python -m pip install -r requirements/local.txt
 python -m pytest
 ```
 
 For the optional Qwen teacher, additionally install `.[teacher]` in its
 dedicated environment and set `DAHUA_QWEN_MODEL_DIR`.
+
+The remote Qwen host installs its own stack from `requirements/server.txt`.
+Configure only its SSH host, port, user, and project root in **系统设置**; its
+Python interpreter, CUDA setup, and Qwen model path remain server-side.
 
 ## Web UI (server)
 

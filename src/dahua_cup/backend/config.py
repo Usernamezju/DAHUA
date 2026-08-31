@@ -16,6 +16,7 @@ import yaml
 from dahua_cup.paths import CONFIG_ROOT, REPOSITORY_ROOT
 
 from dahua_cup.backend.macro_parameters import load_macro_parameter_file
+from dahua_cup.backend.remote import load_qwen_remote, save_qwen_remote
 
 
 def path_is_within(path: Path, root: Path) -> bool:
@@ -164,6 +165,16 @@ class Settings:
     @property
     def macro_parameters_path(self) -> Path:
         return self.runtime_root / "settings" / "macro_parameters.json"
+
+    @property
+    def qwen_remote_path(self) -> Path:
+        return self.runtime_root / "settings" / "qwen_remote.json"
+
+    def qwen_remote(self) -> dict:
+        return load_qwen_remote(self.qwen_remote_path)
+
+    def update_qwen_remote(self, value: dict) -> dict:
+        return save_qwen_remote(self.qwen_remote_path, value)
 
     @property
     def campus6_backend(self) -> bool:

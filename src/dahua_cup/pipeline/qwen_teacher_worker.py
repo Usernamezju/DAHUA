@@ -30,7 +30,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model-dir",
         default=str(
-            Path(
+            os.environ.get("DAHUA_QWEN_MODEL_DIR")
+            or Path(
                 os.environ.get(
                     "DAHUA_MODEL_ROOT",
                     "/workspace/data/xzz_data/DAHUA/models",

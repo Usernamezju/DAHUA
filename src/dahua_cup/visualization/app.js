@@ -11,7 +11,7 @@ Object.assign(LABEL_NAME, { unknown: "无法判断", damaged: "视频损坏", ou
 const SAMPLE_LABEL_GROUPS = LABELS.map(([id, name]) => [id, name]);
 
 const state = {
-  capabilities: {}, system: {}, gpus: {}, macroParameters: {}, dashboard: {}, modelStatus: {}, trainingStatus: {}, samples: [], reviewSamples: [],
+  capabilities: {}, system: {}, gpus: {}, macroParameters: {}, qwenRemote: {}, dashboard: {}, modelStatus: {}, trainingStatus: {}, samples: [], reviewSamples: [],
   sampleTotal: 0, sampleOffset: 0, sampleWindowSize: 500, sampleCursor: 0, reviewTotal: 0,
   hardSamples: [], hardTotal: 0, hardSample: null, hardLoaded: false,
   inferenceSample: null, reviewSample: null, reviewIndex: -1,
@@ -95,12 +95,12 @@ async function loadInferenceSamples(query = "", offset = 0) {
 
 async function refreshAll(preserveSelection = true) {
   try {
-    const [capabilities, system, gpus, macroParameters, dashboard, modelStatus, trainingStatus, samples, reviewSamples] = await Promise.all([
-      api("/api/capabilities"), api("/api/system"), api("/api/gpus"), api("/api/macro-parameters"), api("/api/dashboard"), api("/api/models/status"), api("/api/training/status"),
+    const [capabilities, system, gpus, macroParameters, qwenRemote, dashboard, modelStatus, trainingStatus, samples, reviewSamples] = await Promise.all([
+      api("/api/capabilities"), api("/api/system"), api("/api/gpus"), api("/api/macro-parameters"), api("/api/qwen-remote"), api("/api/dashboard"), api("/api/models/status"), api("/api/training/status"),
       fetchSampleSummaries({limit:state.sampleWindowSize,include_teacher:false}), fetchSampleSummaries({status:"pending",limit:50,include_teacher:false}),
     ]);
     Object.assign(state, {
-      capabilities, system, gpus, macroParameters, dashboard, modelStatus, trainingStatus,
+      capabilities, system, gpus, macroParameters, qwenRemote, dashboard, modelStatus, trainingStatus,
       samples: samples.items, sampleTotal: samples.total, sampleOffset: samples.offset, sampleCursor: 0,
       reviewSamples: reviewSamples.items, reviewTotal: reviewSamples.total,
       hardSamples: [], hardTotal: 0, hardSample: null, hardLoaded: false,
@@ -524,7 +524,23 @@ function renderTrainingStatus() {
 function renderSettings() {
   renderMacroParameters();
   renderGpuSettings();
+  renderQwenRemoteSettings();
 }
+
+function renderQwenRemoteSettings() {
+  const value=state.qwenRemote||{};
+  const fields={
+    "qwen-remote-enabled":Boolean(value.enabled), "qwen-remote-host":value.host||"",
+    "qwen-remote-port":value.port||22, "qwen-remote-user":value.user||"",
+    "qwen-remote-root":value.project_root||"",
+  };
+  Object.entries(fields).forEach(([id,current])=>{const input=$("#"+id);if(!input)return;if(input.type==="checkbox")input.checked=current;else input.value=current;});
+}
+
+function qwenRemotePayload(){return {enabled:$("#qwen-remote-enabled").checked,host:$("#qwen-remote-host").value.trim(),port:Number($("#qwen-remote-port").value),user:$("#qwen-remote-user").value.trim(),project_root:$("#qwen-remote-root").value.trim()};}
+
+async function saveQwenRemoteSettings(){try{state.qwenRemote=await api("/api/qwen-remote",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(qwenRemotePayload())});renderQwenRemoteSettings();state.capabilities=await api("/api/capabilities");renderCapabilities();toast("Qwen 云端连接已保存，后续任务立即生效");}catch(error){toast(error.message,true)}}
+async function testQwenRemoteSettings(){try{await saveQwenRemoteSettings();await api("/api/qwen-remote/test",{method:"POST"});toast("Qwen 云端 SSH 连接和项目根目录验证成功");}catch(error){toast(error.message,true)}}
 
 function macroInputAttrs(type) {
   if (type === "unit_interval") return 'step="0.01" min="0" max="1"';
@@ -642,6 +658,8 @@ function bindEvents() {
   document.addEventListener("click",()=>setSampleTreeOpen(false));
   if($("#refresh-gpus"))$("#refresh-gpus").onclick=refreshGpus;
   if($("#save-gpu-settings"))$("#save-gpu-settings").onclick=saveGpuSettings;
+  if($("#save-qwen-remote"))$("#save-qwen-remote").onclick=saveQwenRemoteSettings;
+  if($("#test-qwen-remote"))$("#test-qwen-remote").onclick=testQwenRemoteSettings;
   if($("#teacher-gpu-auto"))$("#teacher-gpu-auto").onchange=event=>$$('input[data-gpu-kind="teacher"]').forEach(input=>input.disabled=event.target.checked);
   if($("#apply-macro-parameters"))$("#apply-macro-parameters").onclick=applyMacroParameters;
   if($("#reset-macro-parameters"))$("#reset-macro-parameters").onclick=resetMacroParameters;

@@ -1,0 +1,4 @@
+# Remote Qwen host.  Install from the remote project root:
+#   python -m pip install -r requirements/server.txt
+-e .[web,teacher]
+-r ../third_party/ProtoGCN/requirements.txt

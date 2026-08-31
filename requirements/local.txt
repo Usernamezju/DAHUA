@@ -1,0 +1,4 @@
+# Local development and Web/API environment.  Qwen runs on the configured
+# remote server; it is intentionally not installed here.
+-e .[web,test]
+-r ../third_party/ProtoGCN/requirements.txt

@@ -23,6 +23,7 @@ from .baseline import Campus6Baseline
 from .config import Settings
 from .gpu import GPUManager
 from .hard_samples import evaluate_hard_sample
+from .remote import run_remote_qwen, test_connection as test_qwen_remote_connection
 from .store import INTERRUPTED_JOB_MESSAGE, ReviewStore
 
 
@@ -647,7 +648,9 @@ class JobManager:
         pose_command = self.settings.default_pose_command()
         student_command = self.settings.default_student_command()
         teacher_command = self.settings.default_teacher_command()
+        remote_teacher = self.settings.qwen_remote()
         teacher_gpus = self.gpus.teacher_availability()
+        remote_enabled = bool(remote_teacher["enabled"])
         return {
             "pose_extraction": {
                 "enabled": bool(pose_command),
@@ -660,9 +663,9 @@ class JobManager:
             "manual_review": {"enabled": True, "reason": ""},
             "dataset_export": {"enabled": True, "reason": ""},
             "qwen_teacher": {
-                "enabled": bool(teacher_command) and teacher_gpus["enabled"],
+                "enabled": remote_enabled or (bool(teacher_command) and teacher_gpus["enabled"]),
                 "reason": (
-                    "" if (teacher_command and teacher_gpus["enabled"])
+                    "" if (remote_enabled or (teacher_command and teacher_gpus["enabled"]))
                     else (
                         "尚未配置服务器 Qwen 模型或教师 Python 环境"
                         if not teacher_command else
@@ -676,9 +679,13 @@ class JobManager:
                     )
                 ),
                 "gpu_admission": teacher_gpus,
+                "execution": "remote_ssh" if remote_enabled else "local",
             },
             "live_camera": {"enabled": False, "reason": "第一阶段只处理服务器文件"},
         }
+
+    def test_qwen_remote_connection(self) -> None:
+        test_qwen_remote_connection(self.settings.qwen_remote())
 
     def submit(self, sample_id: str, action: str) -> dict:
         if action not in ACTIONS:
@@ -1201,6 +1208,10 @@ class JobManager:
             raise FileNotFoundError(
                 "尚无骨架特征或骨架视频，请先运行骨架提取"
             )
+        remote_teacher = self.settings.qwen_remote()
+        if remote_teacher["enabled"]:
+            run_remote_qwen(remote_teacher, sample_id, paths)
+            return "Qwen 云端教师分析完成"
         values = {
             key: shlex.quote(str(value))
             for key, value in {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -51,6 +52,14 @@ class GPUSettingsRequest(BaseModel):
 
 class MacroParametersRequest(BaseModel):
     values: Dict[str, Any] = Field(default_factory=dict)
+
+
+class QwenRemoteRequest(BaseModel):
+    enabled: bool = False
+    host: str = ""
+    port: int = 22
+    user: str = ""
+    project_root: str = ""
 
 
 def _not_found(kind: str, identifier: str) -> HTTPException:
@@ -301,6 +310,27 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/qwen-remote")
+    def qwen_remote(request: Request):
+        return request.app.state.settings.qwen_remote()
+
+    @app.put("/api/qwen-remote")
+    def update_qwen_remote(value: QwenRemoteRequest, request: Request):
+        try:
+            return request.app.state.settings.update_qwen_remote(
+                value.model_dump()
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/qwen-remote/test")
+    def test_qwen_remote(request: Request):
+        try:
+            request.app.state.jobs.test_qwen_remote_connection()
+            return {"ok": True}
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            raise HTTPException(status_code=422, detail="Qwen 云端连接失败：{}".format(str(exc)[:240])) from exc
 
     @app.get("/api/macro-parameters")
     def macro_parameters(request: Request):
