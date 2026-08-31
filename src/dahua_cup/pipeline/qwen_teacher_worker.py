@@ -103,7 +103,7 @@ def main(argv=None) -> None:
         )
     pose_video = require_file(args.pose_video, "rendered pose video")
     labels = load_labels(args.label_map)
-    student_task, student_distribution = load_student_hint(
+    student_task, _ = load_student_hint(
         args.student_json, labels
     )
     task = args.task.strip() or student_task or f"closed_set_{len(labels)}"
@@ -128,7 +128,6 @@ def main(argv=None) -> None:
     result, provenance = teacher.predict(
         sample_id=args.sample_id,
         semantic_graph=semantic_graph,
-        student_distribution=student_distribution,
         video_path=pose_video,
         allowed_labels=labels,
         task=task,

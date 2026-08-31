@@ -18,35 +18,11 @@ from typing import Any, Dict
 # One entry per adjustable parameter.  "key" must match a Settings field.
 MACRO_PARAMETERS = [
     {
-        "key": "joint_score_threshold",
-        "name": "关节点置信度阈值",
-        "description": "RTMPose 提取时保留关节点的最低置信度，低于该值的关节点视为不可用",
-        "type": "unit_interval",
-        "default": 0.20,
-        "group": "pose",
-    },
-    {
         "key": "teacher_trigger_confidence",
         "name": "难例门控置信度 τ",
-        "description": "学生 Top-1 置信度 ≤ τ 时进入难例判定，高于 τ 跳过 Qwen",
+        "description": "学生 Top-1 置信度或 Top1-Top2 间隔不高于 τ 时进入难例判定",
         "type": "unit_interval",
         "default": 0.30,
-        "group": "gate",
-    },
-    {
-        "key": "teacher_trigger_margin",
-        "name": "Top1-Top2 间隔阈值",
-        "description": "Top-1 与 Top-2 概率间隔低于该值时判定为不确定",
-        "type": "unit_interval",
-        "default": 0.15,
-        "group": "gate",
-    },
-    {
-        "key": "pose_quality_threshold",
-        "name": "骨架质量门控阈值",
-        "description": "骨架覆盖与关节点分数加权质量低于该值视为质量不足",
-        "type": "unit_interval",
-        "default": 0.70,
         "group": "gate",
     },
     {
@@ -57,82 +33,19 @@ MACRO_PARAMETERS = [
         "default": 0.70,
         "group": "gate",
     },
-    {
-        "key": "review_temperature",
-        "name": "概率温度（审核软化）",
-        "description": "审核界面六类概率的温度缩放系数，越大分布越平滑",
-        "type": "positive_float",
-        "default": 5.0,
-        "group": "probability",
-    },
-    {
-        "key": "priority_teacher_conflict",
-        "name": "师生冲突复核优先级",
-        "description": "高置信师生冲突样本进入复核队列的排序权重",
-        "type": "nonnegative_int",
-        "default": 1_000_000,
-        "group": "priority",
-    },
-    {
-        "key": "priority_pose_quality",
-        "name": "骨架质量不足优先级",
-        "description": "骨架质量不达标样本进入复核队列的排序权重",
-        "type": "nonnegative_int",
-        "default": 900_000,
-        "group": "priority",
-    },
-    {
-        "key": "priority_student_instability",
-        "name": "学生不稳定优先级",
-        "description": "时序不稳定样本进入复核队列的排序权重",
-        "type": "nonnegative_int",
-        "default": 800_000,
-        "group": "priority",
-    },
-    {
-        "key": "priority_teacher_review",
-        "name": "教师要求复核优先级",
-        "description": "教师主动要求人工复核样本的排序权重",
-        "type": "nonnegative_int",
-        "default": 750_000,
-        "group": "priority",
-    },
-    {
-        "key": "priority_teacher_unavailable",
-        "name": "教师不可用优先级",
-        "description": "学生不确定但教师未启用样本的排序权重",
-        "type": "nonnegative_int",
-        "default": 700_000,
-        "group": "priority",
-    },
 ]
 
 # Environment variables that override each parameter.  A non-empty value
 # counts as an explicit deployment-level override and takes precedence over
 # both the saved file and the routing configuration.
 ENV_OVERRIDES = {
-    "joint_score_threshold": ("DAHUA_RTMPOSE_JOINT_SCORE_THRESHOLD",),
     "teacher_trigger_confidence": ("DAHUA_TEACHER_TRIGGER_CONFIDENCE",),
-    "teacher_trigger_margin": ("DAHUA_TEACHER_TRIGGER_MARGIN",),
-    "pose_quality_threshold": ("DAHUA_POSE_QUALITY_THRESHOLD",),
     "teacher_conflict_confidence": ("DAHUA_TEACHER_CONFLICT_CONFIDENCE",),
-    "priority_teacher_conflict": ("DAHUA_PRIORITY_TEACHER_CONFLICT",),
-    "priority_pose_quality": ("DAHUA_PRIORITY_POSE_QUALITY",),
-    "priority_student_instability": ("DAHUA_PRIORITY_STUDENT_INSTABILITY",),
-    "priority_teacher_review": ("DAHUA_PRIORITY_TEACHER_REVIEW",),
-    "priority_teacher_unavailable": ("DAHUA_PRIORITY_TEACHER_UNAVAILABLE",),
-    "review_temperature": (
-        "DAHUA_CAMPUS6_REVIEW_TEMPERATURE",
-        "DAHUA_CAMPUS6_PROBABILITY_TEMPERATURE",
-    ),
 }
 
 SPEC_BY_KEY = {item["key"]: item for item in MACRO_PARAMETERS}
 GROUP_NAMES = {
-    "pose": "骨架提取",
     "gate": "难例门控",
-    "probability": "概率校准",
-    "priority": "复核优先级",
 }
 
 

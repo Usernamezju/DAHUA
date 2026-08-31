@@ -10,7 +10,6 @@ CONDITION_TITLES = (
     ("C1", "小模型预测不确定"),
     ("C2", "大小模型预测不同"),
     ("C3", "大小模型高置信度冲突"),
-    ("C4", "时序预测不稳定"),
     ("C5", "类别稀有"),
 )
 
@@ -26,16 +25,12 @@ def evaluate_hard_sample(
     teacher: Optional[Mapping[str, Any]],
     *,
     confidence_threshold: float,
-    margin_threshold: float,
     conflict_confidence_threshold: float,
-    instability_threshold: float,
 ) -> dict:
-    """Evaluate the five conditions after the student-confidence gate."""
+    """Evaluate the four conditions after the student-confidence gate."""
     thresholds = (
         confidence_threshold,
-        margin_threshold,
         conflict_confidence_threshold,
-        instability_threshold,
     )
     if any(not 0 <= value <= 1 for value in thresholds):
         raise ValueError("hard-sample thresholds must be in [0, 1]")
@@ -65,7 +60,7 @@ def evaluate_hard_sample(
             margin = float(topk[0]["score"]) - float(topk[1]["score"])
         except (KeyError, TypeError, ValueError):
             margin = None
-    c1 = None if margin is None else float(margin) < margin_threshold
+    c1 = None if margin is None else float(margin) < confidence_threshold
 
     c2: Optional[bool] = None
     c3: Optional[bool] = None
@@ -83,27 +78,16 @@ def evaluate_hard_sample(
         except (KeyError, TypeError, ValueError):
             c3 = None
 
-    instability = dict(gate.get("instability") or {})
-    try:
-        runs_compared = int(instability.get("runs_compared", 0))
-    except (TypeError, ValueError):
-        runs_compared = 0
-    c4 = (
-        None
-        if runs_compared < 1
-        else float(instability.get("score", 0.0)) >= instability_threshold
-    )
-
     rare = prediction.get("rare_class")
     c5 = None if rare is None else bool(rare)
     if confidence_gate is False:
         # The teacher is downstream of student uncertainty. Historical teacher
         # artifacts must never turn a reliable student result back into a hard
         # sample or trigger another Qwen call.
-        c1 = c2 = c3 = c4 = c5 = False
+        c1 = c2 = c3 = c5 = False
     elif confidence_gate is None:
-        c1 = c2 = c3 = c4 = c5 = None
-    values = {"C1": c1, "C2": c2, "C3": c3, "C4": c4, "C5": c5}
+        c1 = c2 = c3 = c5 = None
+    values = {"C1": c1, "C2": c2, "C3": c3, "C5": c5}
     conditions = [
         {"code": code, "title": title, "status": _state(values[code])}
         for code, title in CONDITION_TITLES
@@ -124,10 +108,10 @@ def evaluate_hard_sample(
             "、".join(pending)
         )
     else:
-        summary = "五项条件均未命中，判定为非难例。"
+        summary = "四项条件均未命中，判定为非难例。"
     return {
         "schema_version": "campus6_hard_decision.v1",
-        "formula": "Hard(x) = [P_student_top1 ≤ τ] ∧ (C1 ∨ C2 ∨ C3 ∨ C4 ∨ C5)",
+        "formula": "Hard(x) = [P_student_top1 ≤ τ] ∧ (C1 ∨ C2 ∨ C3 ∨ C5)",
         "confidence_gate": {
             "threshold": confidence_threshold,
             "student_confidence": student_confidence,

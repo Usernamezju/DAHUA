@@ -31,12 +31,20 @@ class Campus6Baseline:
         annotations: Path,
         predictions: Optional[Path] = None,
         review_temperature: float = 5.0,
+        ffmpeg: str = "ffmpeg",
+        preview_codec: str = "libx264",
+        preview_preset: str = "veryfast",
+        preview_bitrate: str = "2M",
     ):
         self.annotations_path = Path(annotations).resolve()
         self.predictions_path = Path(predictions).resolve() if predictions else None
         if not np.isfinite(review_temperature) or review_temperature <= 0:
             raise ValueError("review_temperature must be positive")
         self.review_temperature = float(review_temperature)
+        self.ffmpeg = str(ffmpeg)
+        self.preview_codec = str(preview_codec)
+        self.preview_preset = str(preview_preset)
+        self.preview_bitrate = str(preview_bitrate)
         self._lock = threading.Lock()
         self._annotations: dict[str, dict] = {}
         self._records: list[dict] = []
@@ -302,8 +310,9 @@ class Campus6Baseline:
                 keypoint_score=score,
             )
             args = argparse.Namespace(
-                feature=str(feature), output=str(destination), ffmpeg="ffmpeg",
-                codec="libx264", preset="veryfast", bitrate="2M", fps=10.0,
+                feature=str(feature), output=str(destination), ffmpeg=self.ffmpeg,
+                codec=self.preview_codec, preset=self.preview_preset,
+                bitrate=self.preview_bitrate, fps=10.0,
             )
             try:
                 render(args)

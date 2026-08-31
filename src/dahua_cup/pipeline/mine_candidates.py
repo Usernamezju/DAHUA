@@ -379,7 +379,6 @@ def main(argv=None) -> None:
             store.escalate_hard_sample(
                 str(row["sample_id"]),
                 hard_score=float(row["hard_score"]),
-                priority=int(row["review_priority"]),
                 reason=(
                     row["hard_reasons"][0]
                     if row["hard_reasons"] else "offline_hard_mining"

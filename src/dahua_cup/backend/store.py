@@ -359,7 +359,6 @@ class ReviewStore:
         video_path: Union[str, Path],
         *,
         pseudo_dataset_path: Union[str, Path],
-        priority: int = 0,
         hard_score: Optional[float] = None,
         source_dataset: str = "pseudo_label",
     ) -> dict:
@@ -373,7 +372,6 @@ class ReviewStore:
         dataset_path = Path(pseudo_dataset_path).expanduser().resolve()
         created_at = _now()
         payload = json.dumps(record, ensure_ascii=False, sort_keys=True)
-        priority = max(0, int(priority))
         hard_value = None if hard_score is None else float(hard_score)
         if hard_value is not None and not 0 <= hard_value <= 1:
             raise ValueError("hard_score must be in [0, 1]")
@@ -386,13 +384,13 @@ class ReviewStore:
                     """
                     INSERT INTO samples(
                       sample_id, video_path, source_dataset, suggested_label,
-                      status, priority, quality_score, hard_score,
+                      status, quality_score, hard_score,
                       pseudo_dataset_path, pseudo_record_json, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        sample_id, str(source), source_dataset, label, priority,
-                        score, hard_value, str(dataset_path), payload,
+                        sample_id, str(source), source_dataset, label, score,
+                        hard_value, str(dataset_path), payload,
                         created_at, created_at,
                     ),
                 )
@@ -402,7 +400,7 @@ class ReviewStore:
                     """
                     UPDATE samples SET video_path = ?, source_dataset = ?,
                       suggested_label = ?, status = 'pending',
-                      priority = ?, manual_label = NULL, reviewer = NULL,
+                      manual_label = NULL, reviewer = NULL,
                       reason_code = NULL, note = '', reviewed_at = NULL,
                       quality_score = ?, hard_score = ?,
                       pseudo_dataset_path = ?, pseudo_record_json = ?,
@@ -410,7 +408,7 @@ class ReviewStore:
                     WHERE sample_id = ?
                     """,
                     (
-                        str(source), source_dataset, label, priority, score,
+                        str(source), source_dataset, label, score,
                         hard_value, str(dataset_path), payload, created_at,
                         sample_id,
                     ),
@@ -429,7 +427,6 @@ class ReviewStore:
                         {
                             "quality_score": score,
                             "hard_score": hard_value,
-                            "priority": priority,
                             "pseudo_dataset_path": str(dataset_path),
                         },
                         ensure_ascii=False,
@@ -444,7 +441,6 @@ class ReviewStore:
         sample_id: str,
         *,
         hard_score: float,
-        priority: int,
         reason: str,
         payload: Optional[dict] = None,
     ) -> dict:
@@ -455,7 +451,6 @@ class ReviewStore:
         reason = reason.strip()
         if not reason:
             raise ValueError("hard-sample reason is required")
-        priority = max(0, int(priority))
         created_at = _now()
         with self.connect() as connection:
             previous = connection.execute(
@@ -466,7 +461,6 @@ class ReviewStore:
             connection.execute(
                 """
                 UPDATE samples SET status = 'pending',
-                  priority = CASE WHEN priority > ? THEN priority ELSE ? END,
                   hard_score = CASE
                     WHEN hard_score IS NULL OR hard_score < ? THEN ?
                     ELSE hard_score
@@ -475,8 +469,6 @@ class ReviewStore:
                 WHERE sample_id = ?
                 """,
                 (
-                    priority,
-                    priority,
                     score,
                     score,
                     created_at,
@@ -495,7 +487,6 @@ class ReviewStore:
                         {
                             "reason": reason,
                             "hard_score": score,
-                            "priority": priority,
                             "previous_status": previous["status"],
                             **(payload or {}),
                         },
@@ -546,11 +537,11 @@ class ReviewStore:
             else:
                 raise ValueError(f"unsupported workflow status: {workflow_status}")
         clause = f"WHERE {' AND '.join(where)}" if where else ""
-        limit = max(1, min(int(limit), 200))
+        limit = max(1, min(int(limit), 500))
         offset = max(0, int(offset))
         columns = (
             "sample_id, source_dataset, source_label, suggested_coarse_label, "
-            "suggested_label, status, priority, manual_label, reviewer, "
+            "suggested_label, status, manual_label, reviewer, "
             "updated_at, reviewed_at, "
             "CASE WHEN status != 'pending' THEN 'complete' "
             "WHEN EXISTS (SELECT 1 FROM jobs "
@@ -569,7 +560,7 @@ class ReviewStore:
                 f"""
                 SELECT {columns} FROM samples {clause}
                 ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END,
-                         priority DESC, sample_id ASC LIMIT ? OFFSET ?
+                         sample_id ASC LIMIT ? OFFSET ?
                 """,
                 (*values, limit, offset),
             ).fetchall()
@@ -629,16 +620,18 @@ class ReviewStore:
         return str(first.get("label") or "") if isinstance(first, dict) else ""
 
     @classmethod
-    def _is_incremental_hard_correction(
-        cls, final_label: str, student_snapshot: object
-    ) -> bool:
-        """A human six-class correction is a durable incremental hard case."""
+    def _incremental_pool_reason(
+        cls, final_label: str, reason_code: str, student_snapshot: object
+    ) -> str:
+        """Return why a human-reviewed item belongs in the incremental pool."""
+        if final_label not in LABELS:
+            return ""
+        if reason_code == "human_reviewed_hard_sample":
+            return "human_reviewed_hard_sample"
         student_label = cls._student_top1_label(student_snapshot)
-        return (
-            final_label in LABELS
-            and student_label in LABELS
-            and student_label != final_label
-        )
+        if student_label in LABELS and student_label != final_label:
+            return "human_label_disagrees_with_student"
+        return ""
 
     @classmethod
     def _refresh_incremental_pool(
@@ -647,21 +640,23 @@ class ReviewStore:
         """Rebuild the pool flag from active review history, including undo."""
         rows = connection.execute(
             """
-            SELECT final_label, student_snapshot_json
+            SELECT final_label, reason_code, student_snapshot_json
             FROM reviews
             WHERE sample_id = ? AND reverted_at IS NULL
             ORDER BY review_id DESC
             """,
             (sample_id,),
         ).fetchall()
-        enrolled = False
+        pool_reason = ""
         for row in rows:
             try:
                 snapshot = json.loads(row["student_snapshot_json"] or "{}")
             except (TypeError, ValueError):
                 snapshot = {}
-            if cls._is_incremental_hard_correction(row["final_label"], snapshot):
-                enrolled = True
+            pool_reason = cls._incremental_pool_reason(
+                row["final_label"], row["reason_code"], snapshot
+            )
+            if pool_reason:
                 break
         connection.execute(
             """
@@ -671,12 +666,12 @@ class ReviewStore:
             WHERE sample_id = ?
             """,
             (
-                int(enrolled),
-                "human_label_disagrees_with_student" if enrolled else "",
+                int(bool(pool_reason)),
+                pool_reason,
                 sample_id,
             ),
         )
-        return enrolled
+        return pool_reason
 
     def submit_review(
         self,
@@ -732,9 +727,10 @@ class ReviewStore:
                 """,
                 (status, final_label, reviewer, reason_code, note.strip(), created_at, created_at, sample_id),
             )
-            enrolled_in_incremental_pool = self._refresh_incremental_pool(
+            incremental_pool_reason = self._refresh_incremental_pool(
                 connection, sample_id
             )
+            enrolled_in_incremental_pool = bool(incremental_pool_reason)
             connection.execute(
                 "INSERT INTO events(sample_id, event_type, actor, payload_json, created_at) VALUES (?, 'review_submitted', ?, ?, ?)",
                 (
@@ -769,7 +765,7 @@ class ReviewStore:
                         reviewer,
                         json.dumps(
                             {
-                                "reason": "human_label_disagrees_with_student",
+                                "reason": incremental_pool_reason,
                                 "final_label": final_label,
                                 "student_top1_label": self._student_top1_label(
                                     student_snapshot
@@ -1076,22 +1072,20 @@ class ReviewStore:
         return output
 
     def count_incremental_samples(self, since: Optional[str]) -> int:
-        """Count post-production human-confirmed Campus6 samples."""
-        placeholders = ",".join("?" for _ in LABELS)
-        values: List[object] = [*LABELS, "official_initial_annotation"]
+        """Count human-labelled hard-pool samples added since a training run."""
+        values: List[object] = []
         time_clause = ""
         if since:
-            time_clause = "AND reviews.created_at > ?"
+            time_clause = "AND reviewed_at > ?"
             values.append(since)
         with self.connect() as connection:
             return int(connection.execute(
-                f"""
-                SELECT COUNT(DISTINCT reviews.sample_id)
-                FROM reviews
-                WHERE reviews.reverted_at IS NULL
-                  AND reviews.final_label IN ({placeholders})
-                  AND reviews.reviewer != ?
+                """
+                SELECT COUNT(*)
+                FROM samples
+                WHERE incremental_pool = 1
+                  AND status = 'reviewed'
                   {time_clause}
-                """,
+                """.format(time_clause=time_clause),
                 values,
             ).fetchone()[0])

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#0b111d">
   <title>校园行为语义理解平台</title>
-  <link rel="stylesheet" href="/styles.css?v=20260830-macro-params">
+  <link rel="stylesheet" href="/styles.css?v=20260831-neighbor-navigation">
 </head>
 <body>
   <div class="app-shell">
@@ -71,6 +71,7 @@
             <div class="sample-tree-menu hidden" id="sample-tree-menu"><div id="sample-tree-groups" class="sample-tree-groups"></div></div>
           </div>
           <label class="inference-search"><span>搜索识别记录</span><input id="inference-search" placeholder="片段 ID、类别或状态"></label>
+          <div class="sample-navigation" aria-label="切换行为片段"><button id="sample-prev" type="button" title="上一个行为片段" aria-label="上一个行为片段">←</button><button id="sample-next" type="button" title="下一个行为片段" aria-label="下一个行为片段">→</button></div>
           <div class="toolbar-spacer"></div>
           <span class="status-pill online">后台持续处理</span>
         </div>
@@ -111,6 +112,7 @@
       <section class="page" id="page-hard">
         <div class="toolbar panel compact">
           <div class="sample-browser"><label>选择待人工审核难例</label><select id="hard-sample-select"><option value="">正在计算难例队列…</option></select></div>
+          <div class="sample-navigation" aria-label="切换待人工审核难例"><button id="hard-sample-prev" type="button" title="上一个难例" aria-label="上一个难例">←</button><button id="hard-sample-next" type="button" title="下一个难例" aria-label="下一个难例">→</button></div>
           <div class="stat-inline"><strong id="hard-total">0</strong><span>个结构化难例</span></div>
           <div class="toolbar-spacer"></div><span class="status-pill online">Qwen 按 GPU 准入自动分析</span>
         </div>
@@ -121,7 +123,7 @@
           </div>
           <div class="two-column">
             <article class="panel teacher-panel"><div class="panel-head"><div><span class="panel-kicker">QWEN3-VL-8B TEACHER</span><h3>难例语义分析</h3></div><span id="hard-teacher-status" class="status-pill disabled">等待分析</span></div><div id="hard-teacher-result" class="teacher-placeholder">请选择难例</div><div id="hard-teacher-distribution" class="prediction-list empty-state">尚无教师六类分布</div></article>
-            <article class="panel evidence-panel"><div class="panel-head"><div><span class="panel-kicker">STRUCTURED HARD EVIDENCE</span><h3>难例判定证据</h3></div></div><div id="hard-evidence" class="evidence-details">请选择难例</div></article>
+            <article class="panel evidence-panel hard-evidence-panel"><div class="panel-head"><div><h3>难例判定证据</h3></div></div><div id="hard-evidence" class="evidence-details">请选择难例</div></article>
           </div>
         </div>
       </section>
@@ -140,7 +142,6 @@
       <section class="page" id="page-models">
         <div class="page-intro"><div><h2>模型选择</h2></div></div>
         <div id="model-grid" class="model-grid"></div>
-        <div id="model-release" class="model-release"></div>
       </section>
 
       <section class="page" id="page-training">
@@ -149,15 +150,9 @@
       </section>
 
       <section class="page" id="page-settings">
-        <div class="page-intro"><div><span class="panel-kicker">SYSTEM SETTINGS</span><h2>系统设置</h2></div></div>
         <article class="panel settings-panel macro-settings-panel">
-          <div class="panel-head">
-            <div><span class="panel-kicker">MACRO PARAMETERS</span><h3>宏参数</h3><p class="muted">调节难例判定与复核队列的行为阈值，应用后对新任务立即生效。</p></div>
-            <span id="macro-status" class="status-pill online">运行中</span>
-          </div>
           <div id="macro-grid" class="macro-grid"></div>
           <div class="gpu-settings-foot">
-            <p class="macro-hint">已保存的值在服务重启后继续生效；环境变量显式设置时优先生效。<span id="macro-updated"></span></p>
             <div class="macro-actions"><button id="reset-macro-parameters" class="button ghost">恢复默认值</button><button id="apply-macro-parameters" class="button primary">应用宏参数</button></div>
           </div>
         </article>
@@ -176,6 +171,6 @@
     </main>
   </div>
   <div id="toast-root"></div>
-  <script src="/app.js?v=20260831-workflow-status" defer></script>
+  <script src="/app.js?v=20260831-independent-teacher-hard-review" defer></script>
 </body>
 </html>

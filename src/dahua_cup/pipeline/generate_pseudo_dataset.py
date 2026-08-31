@@ -173,22 +173,15 @@ def main(argv=None):
                     f"review sample {sample_id} requires student.video_path"
                 )
             hard_score = float(student.get("hard_score", 0.0))
-            priority = int(
-                student.get(
-                    "review_priority",
-                    round(hard_score * 1000) + len(decision.conflicts) * 100,
-                )
-            )
-            review_items.append((record, video_path, priority, hard_score))
+            review_items.append((record, video_path, hard_score))
     destination = Path(args.output_dir) / args.dataset_version / "pseudo_labels.jsonl"
     if not args.dry_run:
         write_jsonl(destination, records)
-        for record, video_path, priority, hard_score in review_items:
+        for record, video_path, hard_score in review_items:
             review_store.enqueue_pseudo_record(
                 record,
                 video_path,
                 pseudo_dataset_path=destination,
-                priority=priority,
                 hard_score=hard_score,
             )
     log_event("pseudo_complete", samples=len(records), statuses={status: sum(r["status"] == status for r in records)

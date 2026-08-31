@@ -10,7 +10,7 @@ from dahua_cup.semantic_teacher.pseudo_label.filter_label import (
     PseudoLabelFilter,
     distribution_similarity,
 )
-from dahua_cup.semantic_teacher.schemas import LABELS, TeacherOutput
+from dahua_cup.semantic_teacher.schemas import Evidence, LABELS, TeacherOutput
 
 
 def distribution(label="normal_walk", probability=0.9):
@@ -20,22 +20,37 @@ def distribution(label="normal_walk", probability=0.9):
 
 def teacher(label="normal_walk", probability=0.9):
     return TeacherOutput("sample", label, distribution(label, probability), probability,
+                         evidence=[Evidence("trajectory", "s0", "measured motion")],
                          reason="measured evidence", needs_review=False)
 
 
 def test_prompt_is_closed_set_and_evidence_based():
-    prompt = build_teacher_prompt("sample", {"segments": [{"id": "s0"}]}, distribution())
-    assert "campus6-v1.1" in prompt
+    prompt = build_teacher_prompt("sample", {"segments": [{"id": "s0"}]})
+    assert "campus6-v1.3" in prompt
     assert "Do not invent" in prompt
     assert "normal_walk" in prompt
     assert "Do not output label" in prompt
+    assert "at least one item" in prompt
+    assert "student_distribution" not in prompt
+    assert "two or more people" in prompt
+
+
+def test_teacher_response_requires_evidence():
+    value = {
+        "schema_version": "teacher_output.v1", "sample_id": "sample",
+        "distribution": distribution(), "confidence": 0.9,
+        "evidence": [], "counter_evidence": [], "reason": "no cue",
+        "needs_review": True,
+    }
+    with pytest.raises(ValueError, match="at least one evidence"):
+        parse_teacher_output(value, LABELS)
 
 
 def test_teacher_response_is_normalized_to_closed_set():
     value = {
         "schema_version": "teacher_output.v1", "sample_id": "sample", "label": "normal_run",
         "distribution": [{"label": "normal_run", "probability": 0.8}, {"label": "normal_walk", "probability": 0.2}],
-        "confidence": 0.8, "evidence": [], "counter_evidence": [], "reason": "visible motion", "needs_review": False,
+        "confidence": 0.8, "evidence": [{"type":"trajectory", "segment_id":"s0", "description":"visible motion"}], "counter_evidence": [], "reason": "visible motion", "needs_review": False,
     }
     output, raw = parse_teacher_output(value, LABELS)
     assert raw is None
@@ -67,7 +82,7 @@ def test_teacher_label_is_derived_when_model_omits_it():
         "schema_version": "teacher_output.v1", "sample_id": "sample",
         "distribution": [{"label": "normal_run", "probability": 0.8},
                          {"label": "normal_walk", "probability": 0.2}],
-        "confidence": 0.8, "evidence": [], "counter_evidence": [],
+        "confidence": 0.8, "evidence": [{"type":"trajectory", "segment_id":"s0", "description":"visible motion"}], "counter_evidence": [],
         "reason": "visible motion", "needs_review": False,
     }
     output, raw = parse_teacher_output(value, LABELS)
@@ -80,7 +95,7 @@ def test_teacher_conflicting_label_is_replaced_by_distribution_argmax():
         "schema_version": "teacher_output.v1", "sample_id": "sample",
         "label": "playful_push",
         "distribution": distribution("conflict_push", 0.9),
-        "confidence": 0.9, "evidence": [], "counter_evidence": [],
+        "confidence": 0.9, "evidence": [{"type":"trajectory", "segment_id":"s0", "description":"visible motion"}], "counter_evidence": [],
         "reason": "escalating contact", "needs_review": False,
     }
     output, raw = parse_teacher_output(value, LABELS)
@@ -93,7 +108,7 @@ def test_teacher_schema_version_shorthand_is_normalized():
     value = {
         "schema_version": "v1", "sample_id": "sample",
         "distribution": distribution("normal_walk", 0.9),
-        "confidence": 0.9, "evidence": [], "counter_evidence": [],
+        "confidence": 0.9, "evidence": [{"type":"trajectory", "segment_id":"s0", "description":"visible motion"}], "counter_evidence": [],
         "reason": "slow gait", "needs_review": False,
     }
     output, raw = parse_teacher_output(value, LABELS)

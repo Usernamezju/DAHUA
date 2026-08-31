@@ -69,6 +69,8 @@ class TeacherOutput:
             raise ValueError("label must match distribution argmax")
         if abs(self.confidence - self.distribution[self.label]) > 0.05:
             raise ValueError("confidence must match the selected label probability")
+        if not self.evidence:
+            raise ValueError("teacher output requires at least one evidence item")
         if any(not item.segment_id for item in self.evidence):
             raise ValueError("all evidence must cite a segment")
 

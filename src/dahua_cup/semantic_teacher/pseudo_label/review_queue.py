@@ -96,7 +96,7 @@ class ReviewQueue:
     def pending(self, limit=100) -> list[dict]:
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM samples WHERE status = 'pending' ORDER BY priority DESC, created_at ASC LIMIT ?",
+                "SELECT * FROM samples WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?",
                 (int(limit),),
             ).fetchall()
         return [dict(row) for row in rows]

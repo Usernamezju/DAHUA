@@ -9,6 +9,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from dahua_cup.pipeline.video_encoding import browser_video_args
+
 
 COCO17_EDGES = ((0, 1), (0, 2), (1, 3), (2, 4), (0, 5), (0, 6), (5, 7),
                 (7, 9), (6, 8), (8, 10), (5, 6), (5, 11), (6, 12), (11, 12),
@@ -63,7 +65,18 @@ def render(args: argparse.Namespace) -> None:
             writer.write(canvas)
     finally:
         writer.release()
-    command = [args.ffmpeg, "-y", "-i", str(temporary), "-c:v", args.codec, "-preset", args.preset, "-b:v", args.bitrate, "-pix_fmt", "yuv420p", str(output)]
+    command = [
+        args.ffmpeg,
+        "-y",
+        "-i",
+        str(temporary),
+        *browser_video_args(
+            args.codec,
+            preset=args.preset,
+            bitrate=args.bitrate,
+        ),
+        str(output),
+    ]
     try:
         subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     except subprocess.CalledProcessError as exc:

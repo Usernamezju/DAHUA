@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from dahua_cup.pipeline.common import render_command
+from dahua_cup.semantic_teacher.prompts.prompt_builder import PROMPT_VERSION
 
 from .baseline import Campus6Baseline
 from .config import Settings
@@ -163,7 +164,6 @@ def teacher_gate_decision(
     prediction: dict,
     confidence_threshold: float,
     *,
-    margin_threshold: float = 0.15,
     pose_quality: float = 1.0,
     pose_quality_threshold: float = 0.70,
     instability_score: float | None = None,
@@ -172,7 +172,6 @@ def teacher_gate_decision(
     """Route a Campus6 result to student, Qwen, or direct human review."""
     thresholds = (
         confidence_threshold,
-        margin_threshold,
         pose_quality_threshold,
         instability_threshold,
     )
@@ -217,7 +216,7 @@ def teacher_gate_decision(
         reasons.append("student_confidence_below_threshold")
     if margin is None:
         reasons.append("missing_student_top2_margin")
-    elif margin < margin_threshold:
+    elif margin < confidence_threshold:
         reasons.append("student_margin_below_threshold")
     if instability["score"] >= instability_threshold:
         reasons.append("student_prediction_instability")
@@ -234,7 +233,7 @@ def teacher_gate_decision(
         "route": route,
         "threshold": confidence_threshold,
         "confidence_threshold": confidence_threshold,
-        "margin_threshold": margin_threshold,
+        "margin_threshold": confidence_threshold,
         "pose_quality_threshold": pose_quality_threshold,
         "instability_threshold": instability_threshold,
         "top1_label": top1_label,
@@ -856,7 +855,6 @@ class JobManager:
                         gate = teacher_gate_decision(
                             {},
                             self.settings.teacher_trigger_confidence,
-                            margin_threshold=self.settings.teacher_trigger_margin,
                             pose_quality=pose_metrics["quality"],
                             pose_quality_threshold=(
                                 self.settings.pose_quality_threshold
@@ -915,7 +913,6 @@ class JobManager:
                             hard_score=max(
                                 0.01, 1.0 - pose_metrics["quality"]
                             ),
-                            priority=self.settings.priority_pose_quality,
                             reason="pose_quality_below_threshold",
                             payload={"teacher_gate": gate},
                         )
@@ -981,7 +978,6 @@ class JobManager:
                 gate = teacher_gate_decision(
                     prediction,
                     self.settings.teacher_trigger_confidence,
-                    margin_threshold=self.settings.teacher_trigger_margin,
                     pose_quality=pose_metrics["quality"],
                     pose_quality_threshold=self.settings.pose_quality_threshold,
                     instability_threshold=(
@@ -1013,9 +1009,6 @@ class JobManager:
                     self.store.escalate_hard_sample(
                         job["sample_id"],
                         hard_score=gate["instability"]["score"],
-                        priority=(
-                            self.settings.priority_student_instability
-                        ),
                         reason="student_prediction_instability",
                         payload={"teacher_gate": gate},
                     )
@@ -1056,9 +1049,6 @@ class JobManager:
                         self.store.escalate_hard_sample(
                             job["sample_id"],
                             hard_score=1.0,
-                            priority=(
-                                self.settings.priority_teacher_conflict
-                            ),
                             reason=conflict["reason"],
                             payload={
                                 "teacher_gate": gate,
@@ -1069,7 +1059,6 @@ class JobManager:
                         self.store.escalate_hard_sample(
                             job["sample_id"],
                             hard_score=0.85,
-                            priority=self.settings.priority_teacher_review,
                             reason="teacher_requested_review",
                             payload={"teacher_gate": gate},
                         )
@@ -1077,7 +1066,6 @@ class JobManager:
                     self.store.escalate_hard_sample(
                         job["sample_id"],
                         hard_score=0.75,
-                        priority=self.settings.priority_teacher_unavailable,
                         reason="uncertain_student_teacher_unavailable",
                         payload={"teacher_gate": gate},
                     )
@@ -1108,12 +1096,8 @@ class JobManager:
                     confidence_threshold=(
                         self.settings.teacher_trigger_confidence
                     ),
-                    margin_threshold=self.settings.teacher_trigger_margin,
                     conflict_confidence_threshold=(
                         self.settings.teacher_conflict_confidence
-                    ),
-                    instability_threshold=(
-                        self.settings.student_instability_threshold
                     ),
                 )
                 if not decision["is_hard"]:
@@ -1184,7 +1168,7 @@ class JobManager:
         temporary.replace(path)
 
     def _boolean_teacher_gate(self, prediction: dict, gate: dict) -> dict:
-        """Route Qwen only from the five declared hard-sample conditions."""
+        """Route Qwen only from the four declared hard-sample conditions."""
         from dahua_cup.backend.hard_samples import evaluate_hard_sample
 
         value = dict(prediction)
@@ -1193,14 +1177,12 @@ class JobManager:
             value,
             None,
             confidence_threshold=self.settings.teacher_trigger_confidence,
-            margin_threshold=self.settings.teacher_trigger_margin,
             conflict_confidence_threshold=self.settings.teacher_conflict_confidence,
-            instability_threshold=self.settings.student_instability_threshold,
         )
         trigger_codes = [
             code
             for code in decision["matched_conditions"]
-            if code in {"C1", "C4", "C5"}
+            if code in {"C1", "C5"}
         ]
         gate = dict(gate)
         gate.update({
@@ -1265,7 +1247,6 @@ class JobManager:
                 gate = teacher_gate_decision(
                     value,
                     self.settings.teacher_trigger_confidence,
-                    margin_threshold=self.settings.teacher_trigger_margin,
                     pose_quality=pose_metrics["quality"],
                     pose_quality_threshold=self.settings.pose_quality_threshold,
                     instability_score=None,
@@ -1280,7 +1261,7 @@ class JobManager:
         return None
 
     def hard_samples(self, *, limit: int = 100, offset: int = 0) -> dict:
-        """Return samples satisfying Hard(x)=C1 or C2 or C3 or C4 or C5."""
+        """Return samples satisfying Hard(x)=C1 or C2 or C3 or C5."""
         if self.baseline is None:
             return {"total": 0, "items": []}
         from dahua_cup.backend.hard_samples import evaluate_hard_sample
@@ -1288,6 +1269,16 @@ class JobManager:
         candidates = []
         teacher_capability = self.capability_state()["qwen_teacher"]
         for sample_id in self.baseline.sample_ids():
+            try:
+                sample = self.store.get_sample(sample_id)
+            except KeyError:
+                continue
+            # Campus6 initial records carry their source annotation as
+            # ``reviewed``.  Do not use workflow status to hide them here:
+            # only an explicit label submitted from the hard-sample page
+            # moves a sample out of this queue into the durable hard pool.
+            if sample.get("incremental_reason") == "human_reviewed_hard_sample":
+                continue
             prediction = self.prediction(sample_id)
             if prediction is None:
                 continue
@@ -1300,11 +1291,9 @@ class JobManager:
                 prediction,
                 teacher,
                 confidence_threshold=self.settings.teacher_trigger_confidence,
-                margin_threshold=self.settings.teacher_trigger_margin,
                 conflict_confidence_threshold=(
                     self.settings.teacher_conflict_confidence
                 ),
-                instability_threshold=self.settings.student_instability_threshold,
             )
             if not decision["is_hard"]:
                 continue
@@ -1315,25 +1304,19 @@ class JobManager:
                 "C2" in matched,
                 len(matched),
                 "C1" in matched,
-                "C4" in matched,
                 "C5" in matched,
             )
-            candidates.append(
-                (priority, sample_id, prediction, teacher, decision)
-            )
+            candidates.append((priority, sample, prediction, teacher, decision))
 
         candidates.sort(
             key=lambda item: tuple(-int(value) for value in item[0])
-            + (item[1],)
+            + (item[1]["sample_id"],)
         )
         items = []
-        for _, sample_id, prediction, teacher, decision in candidates[
+        for _, sample, prediction, teacher, decision in candidates[
             offset:offset + limit
         ]:
-            try:
-                sample = self.store.get_sample(sample_id)
-            except KeyError:
-                continue
+            sample_id = sample["sample_id"]
             sample.pop("video_path", None)
             sample.pop("hard_score", None)
             sample.pop("quality_score", None)
@@ -1441,11 +1424,9 @@ class JobManager:
             prediction,
             None,
             confidence_threshold=self.settings.teacher_trigger_confidence,
-            margin_threshold=self.settings.teacher_trigger_margin,
             conflict_confidence_threshold=(
                 self.settings.teacher_conflict_confidence
             ),
-            instability_threshold=self.settings.student_instability_threshold,
         )
         if decision["confidence_gate"]["eligible"] is False:
             return {
@@ -1497,6 +1478,17 @@ class JobManager:
                     "model": None,
                     "reason": f"教师结果无法读取：{exc}",
                     "result": None,
+                }
+            saved_prompt_version = str(
+                (value.get("provenance") or {}).get("prompt_version") or ""
+            )
+            if saved_prompt_version != PROMPT_VERSION:
+                return {
+                    "status": "not_run" if capability["enabled"] else "not_enabled",
+                    "model": "Qwen3-VL-8B-Instruct" if capability["enabled"] else None,
+                    "reason": "教师提示词已更新，旧结果不再使用，等待重新分析",
+                    "result": None,
+                    "gate": gate,
                 }
             value.setdefault("status", "completed")
             value.setdefault("model", None)

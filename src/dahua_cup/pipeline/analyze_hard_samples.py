@@ -20,9 +20,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--artifact-root", required=True)
     value.add_argument("--model-dir", required=True)
     value.add_argument("--confidence-threshold", type=float, default=0.30)
-    value.add_argument("--margin-threshold", type=float, default=0.15)
     value.add_argument("--conflict-confidence-threshold", type=float, default=0.70)
-    value.add_argument("--instability-threshold", type=float, default=0.60)
     value.add_argument("--limit", type=int, default=6)
     value.add_argument("--max-frames", type=int, default=8)
     value.add_argument("--max-new-tokens", type=int, default=512)
@@ -43,9 +41,7 @@ def main(argv=None) -> None:
             prediction,
             None,
             confidence_threshold=args.confidence_threshold,
-            margin_threshold=args.margin_threshold,
             conflict_confidence_threshold=args.conflict_confidence_threshold,
-            instability_threshold=args.instability_threshold,
         )
         if decision["is_hard"]:
             rows.append({**prediction, "hard_decision": decision})
@@ -83,16 +79,11 @@ def main(argv=None) -> None:
             json.dumps(row, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-        student_distribution = {
-            item["label"]: float(item["score"])
-            for item in row["topk"]
-        }
         graph = baseline.semantic_graph(sample_id)
         try:
             result, provenance = teacher.predict(
                 sample_id=sample_id,
                 semantic_graph=graph,
-                student_distribution=student_distribution,
                 video_path=pose_video,
                 allowed_labels=LABELS,
                 task="campus6_hard_sample_analysis",

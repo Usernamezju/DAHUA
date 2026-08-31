@@ -18,11 +18,13 @@ Options:
   --rtmpose-python PATH  Explicit Python executable for RTMPose workers.
   --student-python PATH  Explicit Python executable for student workers.
   --teacher-python PATH  Explicit Python executable for teacher workers.
+  --restart              Stop an existing Dahua Web process on the selected port, then start it again.
   -h, --help             Show this help message.
 EOF
 }
 
 server_conda_root="/root/miniconda3"
+restart_web=0
 
 environment_prefix() {
   local environment_name="$1"
@@ -60,6 +62,7 @@ while (($#)); do
     --rtmpose-python) DAHUA_RTMPOSE_PYTHON="$2"; shift 2 ;;
     --student-python) DAHUA_STUDENT_PYTHON="$2"; shift 2 ;;
     --teacher-python) DAHUA_TEACHER_PYTHON="$2"; shift 2 ;;
+    --restart) restart_web=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -110,6 +113,9 @@ export DAHUA_VIS_SOURCE_ROOT="${DAHUA_VIS_SOURCE_ROOT:-${DAHUA_VIS_RUNTIME_ROOT}
 export DAHUA_VIS_MANIFEST="${DAHUA_VIS_MANIFEST:-${DAHUA_VIS_RUNTIME_ROOT}/campus6_manifest.csv}"
 export DAHUA_CAMPUS6_DEPLOY_CONFIG="${DAHUA_CAMPUS6_DEPLOY_CONFIG:-${DAHUA_CODE_ROOT}/third_party/ProtoGCN/configs/campus6/rtmpose26_k400_2d_gap_full.py}"
 export DAHUA_CAMPUS6_DEPLOYMENT_CHECKPOINT="${DAHUA_CAMPUS6_DEPLOYMENT_CHECKPOINT:-${DAHUA_CODE_ROOT}/models/student/M1KD.int8.pt}"
+# skel_gcn38's bundled FFmpeg exposes OpenH264 but not libx264.  OpenH264
+# accepts a bitrate rather than x264's preset/CRF options.
+export DAHUA_VIS_PREVIEW_CODEC="${DAHUA_VIS_PREVIEW_CODEC:-libopenh264}"
 
 : "${DAHUA_VIS_PYTHON:=${visualization_python}}"
 : "${DAHUA_RTMPOSE_PYTHON:=$(environment_python "${DAHUA_RTMPOSE_ENV}")}"
@@ -124,6 +130,70 @@ export DAHUA_VIS_PYTHON DAHUA_RTMPOSE_PYTHON DAHUA_STUDENT_PYTHON DAHUA_TEACHER_
 
 [[ -f "${DAHUA_CAMPUS6_DEPLOY_CONFIG}" ]] || { echo "Campus6 deployment config not found" >&2; exit 2; }
 [[ -f "${DAHUA_CAMPUS6_DEPLOYMENT_CHECKPOINT}" ]] || { echo "M1KD INT8 checkpoint not found" >&2; exit 2; }
+
+port_listener_pids() {
+  local proc pid port command_line
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp "sport = :${DAHUA_VIS_PORT}" 2>/dev/null \
+      | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | sort -u
+    return
+  elif command -v fuser >/dev/null 2>&1; then
+    fuser -n tcp "${DAHUA_VIS_PORT}" 2>/dev/null | tr ' ' '\n' | sed '/^$/d'
+    return
+  fi
+  # Minimal competition containers may not ship ss, lsof, or fuser.  Search
+  # only Dahua backend PIDs, then read their exported port from /proc.  This
+  # avoids walking every process in a GPU worker container.
+  if command -v pgrep >/dev/null 2>&1; then
+    while IFS= read -r pid; do
+      [[ -r "/proc/${pid}/environ" && -r "/proc/${pid}/cmdline" ]] || continue
+      port="$(tr '\0' '\n' < "/proc/${pid}/environ" 2>/dev/null | sed -n 's/^DAHUA_VIS_PORT=//p' | head -n 1)"
+      [[ "${port}" == "${DAHUA_VIS_PORT}" ]] || continue
+      command_line="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
+      [[ "${command_line}" == *"dahua_cup.backend.app"* ]] || continue
+      printf '%s\n' "${pid}"
+    done < <(pgrep -f '[d]ahua_cup.backend.app' || true)
+    return
+  fi
+  # Last-resort fallback when process tools are unavailable.
+  for proc in /proc/[0-9]*; do
+    [[ -r "${proc}/environ" && -r "${proc}/cmdline" ]] || continue
+    port="$(tr '\0' '\n' < "${proc}/environ" 2>/dev/null | sed -n 's/^DAHUA_VIS_PORT=//p' | head -n 1)"
+    [[ "${port}" == "${DAHUA_VIS_PORT}" ]] || continue
+    command_line="$(tr '\0' ' ' < "${proc}/cmdline" 2>/dev/null || true)"
+    [[ "${command_line}" == *"dahua_cup.backend.app"* ]] || continue
+    pid="${proc##*/}"
+    printf '%s\n' "${pid}"
+  done
+}
+
+mapfile -t listening_pids < <(port_listener_pids)
+if ((${#listening_pids[@]})); then
+  if (( ! restart_web )); then
+    echo "Dahua Web service is already listening on ${DAHUA_VIS_HOST}:${DAHUA_VIS_PORT} (PID ${listening_pids[*]})."
+    echo "Reusing the running service; use scripts/run_visualization.sh --restart to restart it explicitly."
+    exit 0
+  fi
+  for pid in "${listening_pids[@]}"; do
+    command_line="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
+    if [[ "${command_line}" != *"dahua_cup.backend.app"* ]]; then
+      echo "Port ${DAHUA_VIS_PORT} is occupied by non-Dahua PID ${pid}; refusing to stop it." >&2
+      exit 1
+    fi
+  done
+  echo "Stopping existing Dahua Web service on ${DAHUA_VIS_HOST}:${DAHUA_VIS_PORT} (PID ${listening_pids[*]})"
+  kill -TERM "${listening_pids[@]}"
+  for _ in {1..20}; do
+    sleep 0.25
+    mapfile -t listening_pids < <(port_listener_pids)
+    ((${#listening_pids[@]})) || break
+  done
+  if ((${#listening_pids[@]})); then
+    echo "Existing Web service did not stop; port ${DAHUA_VIS_PORT} is still occupied by PID ${listening_pids[*]}." >&2
+    exit 1
+  fi
+fi
+
 cd "${DAHUA_CODE_ROOT}"
 echo "Activated visualization environment: ${visualization_venv}"
 echo "Worker environments: RTMPose=${DAHUA_RTMPOSE_PYTHON}, student=${DAHUA_STUDENT_PYTHON}, teacher=${DAHUA_TEACHER_PYTHON}"

@@ -91,15 +91,9 @@ class Settings:
     teacher_routing_config: Optional[Path] = None
     joint_score_threshold: float = 0.20
     teacher_trigger_confidence: float = 0.30
-    teacher_trigger_margin: float = 0.15
     pose_quality_threshold: float = 0.70
     student_instability_threshold: float = 0.60
     teacher_conflict_confidence: float = 0.70
-    priority_teacher_conflict: int = 1_000_000
-    priority_pose_quality: int = 900_000
-    priority_student_instability: int = 800_000
-    priority_teacher_review: int = 750_000
-    priority_teacher_unavailable: int = 700_000
     review_temperature: float = 5.0
     max_workers: int = 2
 
@@ -124,7 +118,6 @@ class Settings:
         routing_path = Path(routing_env).expanduser().resolve() if routing_env else CONFIG_ROOT / "campus" / "teacher_routing.yaml"
         routing = _routing_configuration(routing_path, required=bool(routing_env))
         routing_values = dict(routing.get("routing") or {})
-        priorities = dict(routing.get("review_priority") or {})
         saved_macro = load_macro_parameter_file(
             runtime_root / "settings" / "macro_parameters.json"
         )
@@ -139,18 +132,12 @@ class Settings:
             teacher_command=os.environ.get("DAHUA_VIS_TEACHER_COMMAND", "").strip(),
             ffmpeg=shutil.which(os.environ.get("DAHUA_FFMPEG", "ffmpeg")),
             teacher_routing_config=routing_path if routing_path.is_file() else None,
-            joint_score_threshold=_unit_interval_env("DAHUA_RTMPOSE_JOINT_SCORE_THRESHOLD", float(saved_macro.get("joint_score_threshold", 0.20))),
+            joint_score_threshold=_unit_interval_env("DAHUA_RTMPOSE_JOINT_SCORE_THRESHOLD", 0.20),
             teacher_trigger_confidence=_unit_interval_env("DAHUA_TEACHER_TRIGGER_CONFIDENCE", float(saved_macro.get("teacher_trigger_confidence", float(routing_values.get("confidence_threshold", 0.30))))),
-            teacher_trigger_margin=_unit_interval_env("DAHUA_TEACHER_TRIGGER_MARGIN", float(saved_macro.get("teacher_trigger_margin", float(routing_values.get("margin_threshold", 0.15))))),
-            pose_quality_threshold=_unit_interval_env("DAHUA_POSE_QUALITY_THRESHOLD", float(saved_macro.get("pose_quality_threshold", float(routing_values.get("pose_quality_threshold", 0.70))))),
+            pose_quality_threshold=_unit_interval_env("DAHUA_POSE_QUALITY_THRESHOLD", float(routing_values.get("pose_quality_threshold", 0.70))),
             student_instability_threshold=_unit_interval_env("DAHUA_STUDENT_INSTABILITY_THRESHOLD", float(routing_values.get("instability_threshold", 0.60))),
             teacher_conflict_confidence=_unit_interval_env("DAHUA_TEACHER_CONFLICT_CONFIDENCE", float(saved_macro.get("teacher_conflict_confidence", float(routing_values.get("teacher_conflict_confidence", 0.70))))),
-            priority_teacher_conflict=_nonnegative_int_env("DAHUA_PRIORITY_TEACHER_CONFLICT", int(saved_macro.get("priority_teacher_conflict", int(priorities.get("student_teacher_conflict", 1_000_000))))),
-            priority_pose_quality=_nonnegative_int_env("DAHUA_PRIORITY_POSE_QUALITY", int(saved_macro.get("priority_pose_quality", int(priorities.get("pose_quality_failure", 900_000))))),
-            priority_student_instability=_nonnegative_int_env("DAHUA_PRIORITY_STUDENT_INSTABILITY", int(priorities.get("student_instability", 800_000))),
-            priority_teacher_review=_nonnegative_int_env("DAHUA_PRIORITY_TEACHER_REVIEW", int(saved_macro.get("priority_teacher_review", int(priorities.get("teacher_requested_review", 750_000))))),
-            priority_teacher_unavailable=_nonnegative_int_env("DAHUA_PRIORITY_TEACHER_UNAVAILABLE", int(saved_macro.get("priority_teacher_unavailable", int(priorities.get("uncertain_teacher_unavailable", 700_000))))),
-            review_temperature=_positive_float_env("DAHUA_CAMPUS6_REVIEW_TEMPERATURE", _positive_float_env("DAHUA_CAMPUS6_PROBABILITY_TEMPERATURE", float(saved_macro.get("review_temperature", 5.0)))),
+            review_temperature=_positive_float_env("DAHUA_CAMPUS6_REVIEW_TEMPERATURE", _positive_float_env("DAHUA_CAMPUS6_PROBABILITY_TEMPERATURE", 5.0)),
             max_workers=max(1, _nonnegative_int_env("DAHUA_VIS_MAX_WORKERS", 2)),
         )
 

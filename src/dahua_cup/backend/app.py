@@ -64,9 +64,7 @@ def _difficulty_checks(
         prediction,
         teacher,
         confidence_threshold=settings.teacher_trigger_confidence,
-        margin_threshold=settings.teacher_trigger_margin,
         conflict_confidence_threshold=settings.teacher_conflict_confidence,
-        instability_threshold=settings.student_instability_threshold,
     )
     return [
         {"code": item["code"], "label": item["title"], "status": item["status"]}
@@ -107,9 +105,7 @@ def _sample_payload(
         prediction,
         teacher,
         confidence_threshold=manager.settings.teacher_trigger_confidence,
-        margin_threshold=manager.settings.teacher_trigger_margin,
         conflict_confidence_threshold=manager.settings.teacher_conflict_confidence,
-        instability_threshold=manager.settings.student_instability_threshold,
     )
     checks = [
         {"code": item["code"], "label": item["title"], "status": item["status"]}
@@ -123,7 +119,7 @@ def _sample_payload(
     )
     check_status = {item["code"]: item["status"] for item in checks}
     teacher_needed = any(
-        check_status.get(code) == "yes" for code in ("C1", "C4", "C5")
+        check_status.get(code) == "yes" for code in ("C1", "C5")
     )
     teacher_completed = (
         teacher.get("status") == "completed" and bool(teacher.get("result"))
@@ -155,14 +151,31 @@ def _sample_payload(
     return sample
 
 
-def _sample_summary_payload(sample: dict) -> dict:
+def _sample_summary_payload(
+    app: FastAPI, sample: dict, *, include_teacher: bool = True
+) -> dict:
     """Return list-view metadata without loading per-sample artefacts."""
+    manager: JobManager = app.state.jobs
+    prediction = manager.prediction(sample["sample_id"])
+    topk = list((prediction or {}).get("topk") or [])
+    student_label = topk[0].get("label") if topk else None
+    teacher_label = None
+    if include_teacher:
+        teacher = manager.teacher_state(
+            sample["sample_id"], prediction=prediction
+        )
+        teacher_result = dict(teacher.get("result") or {})
+        teacher_label = (
+            teacher_result.get("label") or teacher_result.get("suggested_label")
+        )
     return {
         "sample_id": sample["sample_id"],
         "source_dataset": sample.get("source_dataset", ""),
         "source_label": sample.get("source_label", ""),
         "suggested_coarse_label": sample.get("suggested_coarse_label", ""),
         "suggested_label": sample.get("suggested_label"),
+        "student_label": student_label,
+        "teacher_label": teacher_label,
         "status": sample.get("status", "pending"),
         "workflow_status": sample.get("workflow_status", "complete"),
         "priority": sample.get("priority", 0),
@@ -187,6 +200,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 annotations,
                 settings.baseline_predictions(),
                 review_temperature=settings.student_probability_temperature(),
+                ffmpeg=str(settings.ffmpeg or "ffmpeg"),
+                preview_codec=settings.preview_codec,
+                preview_preset=settings.preview_preset,
+                preview_bitrate=settings.preview_bitrate,
             )
             if annotations is not None else None
         )
@@ -251,29 +268,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 if current.teacher_routing_config else None
             ),
             "teacher_trigger_confidence": current.teacher_trigger_confidence,
-            "teacher_trigger_margin": current.teacher_trigger_margin,
-            "pose_quality_threshold": current.pose_quality_threshold,
             "student_instability_threshold": (
                 current.student_instability_threshold
             ),
             "teacher_conflict_confidence": (
                 current.teacher_conflict_confidence
             ),
-            "teacher_review_priorities": {
-                "student_teacher_conflict": (
-                    current.priority_teacher_conflict
-                ),
-                "pose_quality_failure": current.priority_pose_quality,
-                "student_instability": (
-                    current.priority_student_instability
-                ),
-                "teacher_requested_review": (
-                    current.priority_teacher_review
-                ),
-                "uncertain_teacher_unavailable": (
-                    current.priority_teacher_unavailable
-                ),
-            },
             "max_workers": current.max_workers,
             "continuous_pipeline": request.app.state.jobs.continuous_status(),
         }
@@ -333,8 +333,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         query: Optional[str] = None,
         workflow_status: Optional[str] = None,
         offset: int = 0,
-        limit: int = Query(default=50, ge=1, le=200),
+        limit: int = Query(default=50, ge=1, le=500),
         summary: bool = False,
+        include_teacher: bool = True,
     ):
         result = request.app.state.store.list_samples(
             status=status,
@@ -346,7 +347,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             summary=summary,
         )
         if summary:
-            result["items"] = [_sample_summary_payload(item) for item in result["items"]]
+            result["items"] = [
+                _sample_summary_payload(
+                    request.app, item, include_teacher=include_teacher
+                )
+                for item in result["items"]
+            ]
         else:
             result["items"] = [_sample_payload(request.app, item) for item in result["items"]]
         return result
@@ -372,6 +378,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         for item in result["items"]:
             item.pop("hard_score", None)
             item.pop("quality_score", None)
+            item["artifacts"] = request.app.state.jobs.artifact_status(
+                item["sample_id"]
+            )
             item["difficulty_checks"] = _difficulty_checks(
                 item.get("prediction"), item.get("teacher"), current
             )

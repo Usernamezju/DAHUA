@@ -227,7 +227,6 @@ class Qwen3Teacher:
         self,
         sample_id: str,
         semantic_graph: Mapping[str, Any],
-        student_distribution: Mapping[str, float] | None = None,
         images: Sequence[Any] | None = None,
         video_path: str | Path | None = None,
         allowed_labels: Sequence[str] = LABELS,
@@ -239,7 +238,6 @@ class Qwen3Teacher:
         prompt = build_teacher_prompt(
             sample_id,
             semantic_graph,
-            student_distribution,
             allowed_labels=labels,
             task=task,
         )

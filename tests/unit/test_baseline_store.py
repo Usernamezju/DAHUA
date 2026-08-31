@@ -34,7 +34,8 @@ def test_baseline_import_is_idempotent_and_preserves_later_review(tmp_path):
     sample = store.get_sample("campus6_0000_test")
     assert sample["manual_label"] == "normal_run"
     assert sample["reviewer"] == "reviewer-a"
-    assert store.count_incremental_samples(None) == 1
+    # 普通审核接受/修改标签不会自动进入难例池。
+    assert store.count_incremental_samples(None) == 0
     assert store.count_incremental_samples("9999-01-01T00:00:00+00:00") == 0
 
 
@@ -90,3 +91,23 @@ def test_human_label_disagreement_enters_reversible_incremental_hard_pool(tmp_pa
     restored = store.get_sample("campus6_0000_test")
     assert restored["incremental_pool"] == 0
     assert restored["incremental_reason"] == ""
+
+
+def test_human_labelled_hard_sample_enters_pool_even_when_student_agrees(tmp_path):
+    store = ReviewStore(tmp_path / "review.sqlite3")
+    store.import_baseline_records([_record()])
+    store.submit_review(
+        "campus6_0000_test",
+        "reviewer-a",
+        "normal_walk",
+        "human_reviewed_hard_sample",
+        student_snapshot={
+            "status": "completed",
+            "top6": [{"label": "normal_walk", "score": 0.90}],
+        },
+    )
+
+    sample = store.get_sample("campus6_0000_test")
+    assert sample["incremental_pool"] == 1
+    assert sample["incremental_reason"] == "human_reviewed_hard_sample"
+    assert store.count_incremental_samples(None) == 1
