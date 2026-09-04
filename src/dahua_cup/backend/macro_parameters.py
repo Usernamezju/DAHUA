@@ -33,6 +33,15 @@ MACRO_PARAMETERS = [
         "default": 0.70,
         "group": "gate",
     },
+    {
+        "key": "incremental_batch_size",
+        "name": "增量训练批次阈值",
+        "description": "人工确认难例达到该数量后自动冻结一批并触发增量训练",
+        "type": "nonnegative_int",
+        "default": 50,
+        "min": 1,
+        "group": "incremental",
+    },
 ]
 
 # Environment variables that override each parameter.  A non-empty value
@@ -41,11 +50,13 @@ MACRO_PARAMETERS = [
 ENV_OVERRIDES = {
     "teacher_trigger_confidence": ("DAHUA_TEACHER_TRIGGER_CONFIDENCE",),
     "teacher_conflict_confidence": ("DAHUA_TEACHER_CONFLICT_CONFIDENCE",),
+    "incremental_batch_size": ("DAHUA_INCREMENTAL_BATCH_SIZE",),
 }
 
 SPEC_BY_KEY = {item["key"]: item for item in MACRO_PARAMETERS}
 GROUP_NAMES = {
     "gate": "难例门控",
+    "incremental": "增量训练",
 }
 
 
@@ -76,9 +87,10 @@ def _parse_value(key: str, raw: Any, *, strict: bool):
             return None
         return float(value)
     # nonnegative_int
-    if value != int(value) or value < 0:
+    minimum = int(spec.get("min", 0))
+    if value != int(value) or value < minimum:
         if strict:
-            raise ValueError("{} 必须是非负整数".format(spec["name"]))
+            raise ValueError("{} 必须是大于等于 {} 的整数".format(spec["name"], minimum))
         return None
     return int(value)
 

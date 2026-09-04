@@ -48,7 +48,19 @@
     }
   ],
   "pose_assets": [
-    {"path": "models/pose/rtmdet-m_person_detector.pth", "sha256": "35b0c7406499e0d141dd6a0235db07c10d2bee8f891f8f4e353c16a009de30e8", "bytes": 99013732},
-    {"path": "models/pose/rtmpose-m_coco17.pth", "sha256": "e48f03d0cfe1285ee8b6d3457ac3ce33a4594a92b080053ab1ec4a7e300975f2", "bytes": 54551099}
+    {
+      "path": "models/pose/rtmdet-s_coco80.pth",
+      "sha256": "387a891e157cf0ab57d76b3ffc17bf77247089d672532427930b3140f9e789d6",
+      "bytes": 91450098,
+      "role": "default RTMDet-S COCO person detector (class 0)",
+      "source_url": "https://download.openmmlab.com/mmdetection/v3.0/rtmdet/rtmdet_s_8xb32-300e_coco/rtmdet_s_8xb32-300e_coco_20220905_161602-387a891e.pth"
+    },
+    {
+      "path": "models/pose/rtmpose-s_coco17.pth",
+      "sha256": "29dcacbb5c5f3ab2f03a67fedcb58cf7287f93b9a8a9d893f42416b63fc304ba",
+      "bytes": 22007001,
+      "role": "default RTMPose-S COCO-17 top-down pose estimator",
+      "source_url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/rtmpose-s_simcc-coco_pt-aic-coco_420e-256x192-8edcf0d7_20230127.pth"
+    }
   ]
 }

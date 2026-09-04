@@ -83,6 +83,19 @@ def train_model(model,
     ]
 
     # put model on gpus
+    lora = cfg.get('lora', {})
+    if lora.get('enabled', False):
+        from dahua_cup.semantic_teacher.incremental.lora import install_classifier_lora
+        trainable = install_classifier_lora(
+            model,
+            rank=int(lora.get('rank', 8)),
+            alpha=float(lora.get('alpha', 16.0)),
+        )
+        logger.info(
+            'LoRA incremental fine-tuning: backbone/base weights frozen; '
+            'rank=%s, trainable parameters: %s',
+            lora.get('rank', 8), ', '.join(trainable),
+        )
     find_unused_parameters = cfg.get('find_unused_parameters', True)
     # Sets the `find_unused_parameters` parameter in
     # torch.nn.parallel.DistributedDataParallel
@@ -93,7 +106,7 @@ def train_model(model,
         broadcast_buffers=False,
         find_unused_parameters=find_unused_parameters)
 
-    if cfg.get('freeze_backbone', False):
+    if cfg.get('freeze_backbone', False) and not lora.get('enabled', False):
         trainable = [
             name for name, parameter in model.module.named_parameters()
             if parameter.requires_grad

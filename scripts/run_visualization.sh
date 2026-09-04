@@ -72,6 +72,20 @@ code_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export DAHUA_CODE_ROOT="${DAHUA_CODE_ROOT:-${code_root}}"
 export PYTHONPATH="${DAHUA_CODE_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
+# Campus6 production pose path.  These defaults select the downloaded,
+# validated TensorRT FP16 engines; operators can still override them for a
+# deliberate diagnostic backend.
+export DAHUA_CAMPUS6_BACKEND="${DAHUA_CAMPUS6_BACKEND:-rtmpose17}"
+export DAHUA_POSE_BACKEND="${DAHUA_POSE_BACKEND:-tensorrt_fp16}"
+export DAHUA_POSE_DEVICE="${DAHUA_POSE_DEVICE:-cuda:0}"
+export DAHUA_POSE_FP16_MODEL_ROOT="${DAHUA_POSE_FP16_MODEL_ROOT:-${DAHUA_CODE_ROOT}/models/pose/fp16}"
+if [[ -n "${DAHUA_TRT_LD_LIBRARY_PATH:-}" ]]; then
+  export LD_LIBRARY_PATH="${DAHUA_TRT_LD_LIBRARY_PATH}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
+if [[ -n "${DAHUA_TRT_LD_PRELOAD:-}" ]]; then
+  export LD_PRELOAD="${DAHUA_TRT_LD_PRELOAD}${LD_PRELOAD:+:${LD_PRELOAD}}"
+fi
+
 # The backend validates these variables as files, so a bare `python` command
 # is insufficient.  Defaults keep the Campus6 Web and workers in skel_gcn38,
 # while Qwen stays isolated in llm_env.
@@ -111,7 +125,7 @@ export DAHUA_DATA_ROOT="${DAHUA_DATA_ROOT:-${DAHUA_CODE_ROOT}/runtime}"
 export DAHUA_VIS_RUNTIME_ROOT="${DAHUA_VIS_RUNTIME_ROOT:-${DAHUA_DATA_ROOT}}"
 export DAHUA_VIS_SOURCE_ROOT="${DAHUA_VIS_SOURCE_ROOT:-${DAHUA_VIS_RUNTIME_ROOT}/videos}"
 export DAHUA_VIS_MANIFEST="${DAHUA_VIS_MANIFEST:-${DAHUA_VIS_RUNTIME_ROOT}/campus6_manifest.csv}"
-export DAHUA_CAMPUS6_DEPLOY_CONFIG="${DAHUA_CAMPUS6_DEPLOY_CONFIG:-${DAHUA_CODE_ROOT}/third_party/ProtoGCN/configs/campus6/rtmpose26_k400_2d_gap_full.py}"
+export DAHUA_CAMPUS6_DEPLOY_CONFIG="${DAHUA_CAMPUS6_DEPLOY_CONFIG:-${DAHUA_CODE_ROOT}/third_party/ProtoGCN/configs/campus6/rtm_s_coco17_k400_2d_gap_full.py}"
 export DAHUA_CAMPUS6_DEPLOYMENT_CHECKPOINT="${DAHUA_CAMPUS6_DEPLOYMENT_CHECKPOINT:-${DAHUA_CODE_ROOT}/models/student/M1KD.int8.pt}"
 # skel_gcn38's bundled FFmpeg exposes OpenH264 but not libx264.  OpenH264
 # accepts a bitrate rather than x264's preset/CRF options.

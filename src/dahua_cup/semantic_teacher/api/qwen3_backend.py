@@ -231,6 +231,7 @@ class Qwen3Teacher:
         video_path: str | Path | None = None,
         allowed_labels: Sequence[str] = LABELS,
         task: str = "campus6",
+        student_distribution: Mapping[str, float] | None = None,
     ) -> tuple[TeacherOutput, dict[str, Any]]:
         if self.model is None or self.processor is None:
             self.load()
@@ -240,6 +241,7 @@ class Qwen3Teacher:
             semantic_graph,
             allowed_labels=labels,
             task=task,
+            student_distribution=student_distribution,
         )
         content = [{"type": "image", "image": image} for image in (images or [])]
         video_frames = None

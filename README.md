@@ -4,7 +4,7 @@ The deployable Campus6 project, extracted from the mixed research workspace.
 It implements the documented six-class pipeline:
 
 ```text
-video -> RTMDet/RTMPose (two COCO-17 tracks) -> ProtoGCN student
+video -> RTMDet-nano-person/RTMPose-S (two COCO-17 tracks) -> ProtoGCN student
       -> optional Qwen teacher -> review / pseudo-label / retraining loop
 ```
 
@@ -51,6 +51,13 @@ The remote Qwen host installs its own stack from `requirements/server.txt`.
 Configure only its SSH host, port, user, and project root in **系统设置**; its
 Python interpreter, CUDA setup, and Qwen model path remain server-side.
 
+The same **系统设置** initialization also ensures the server-side GCN training
+environment: when `DAHUA_INCREMENTAL_REMOTE_PYTHON` (default
+`/root/miniconda3/envs/skel_gcn38/bin/python`) is missing on the remote host,
+it is rebuilt automatically from `requirements/skel.txt` (Python 3.8 with the
+PyTorch 1.10.2 / CUDA 11.3 Conda build). An existing environment is never
+modified.
+
 ## Web UI (server)
 
 Run the Web service from the repository deployed on the server:
@@ -85,6 +92,89 @@ effect after restarting the service:
   --teacher-env llm_env
 ```
 
+For a developer workstation, use the equivalent local launcher and supply the
+three Conda interpreters explicitly.  It preflights FastAPI upload support,
+RTMDet/RTMPose and PyTorch/MMCV before binding the Web port.  The local
+launcher checks both worker environments: it uses GPU when both expose CUDA,
+otherwise it automatically falls back to CPU. Qwen remains a conditional remote
+call only after the student uncertainty gate fires:
+
+```bash
+bash scripts/run_local_visualization.sh \
+  --web-python /path/to/web-env/bin/python \
+  --rtmpose-python /path/to/pose-env/bin/python \
+  --student-python /path/to/gcn-env/bin/python \
+  --device auto
+```
+
+On this workstation the CPU-tested interpreters are
+`/home/fjp/miniconda3/envs/dahua_cpu/bin/python` (Web + RTMDet/RTMPose) and
+`/home/fjp/miniconda3/envs/dahua_gcn_cpu/bin/python` (ProtoGCN).  They are
+kept separate because the former uses MMCV 2.x while the delivered ProtoGCN
+uses MMCV 1.5.0. CPU works without a CUDA-visible GPU; a CUDA-capable pair of
+environments is selected automatically when present.
+
+Then open `http://127.0.0.1:8000/#gcn`.  Configure the remote Qwen SSH
+connection once in **系统设置**; it is consulted only after the local GCN gate
+asks for semantic review.
+
+### Qwen API resilience fallback
+
+The preferred teacher remains the configured server Qwen model.  If its SSH
+connection, GPU admission, or inference fails, the Web service can
+automatically fall back to a hosted Qwen OpenAI-compatible API.  This is an
+optional resilience path, not a replacement for the server model.  It sends
+only derived skeleton-video JPEG frames and the measured semantic-graph prompt;
+the uploaded RGB source video is never sent to the API.
+
+Enable **Qwen API 备用教师** in **系统设置**, then paste the API Key into its
+write-only password field and save.  It is stored separately on the machine
+running the Web service with owner-only permissions; subsequent reads and API
+responses never return it.  Leaving the field empty preserves an existing key;
+the page also provides an explicit clear option.  For server deployments, an
+environment key remains preferred over the saved Web key.
+
+```bash
+export DASHSCOPE_API_KEY='your-key-here'
+bash scripts/run_local_visualization.sh --web-python /path/to/web-env/bin/python \
+  --rtmpose-python /path/to/pose-env/bin/python \
+  --student-python /path/to/gcn-env/bin/python --device auto
+```
+
+The status pill reports whether a credential is available and whether it came
+from the environment or protected Web settings, never the credential itself.
+Teacher artifacts record `execution: qwen_api_fallback`, the selected model and
+a response hash for audit, but never the API key or raw provider response.
+
+## Pose extraction backend
+
+The Campus6 production path uses the downloaded `RTMDet-nano-person + RTMPose-S`
+TensorRT FP16 engines. The two models keep the same normalized two-person
+COCO-17 contract consumed by the Campus6 ProtoGCN, so historical skeleton
+artifacts do not need to be overwritten. FP32 MMPose remains available for
+diagnosis; the experimental INT8 backend is selected only when explicitly
+configured.
+
+The validated FP16 package is kept at the paths below (or at
+`DAHUA_POSE_FP16_MODEL_ROOT`):
+
+```text
+models/pose/fp16/
+├── rtmdet_nano_person/deploy.json
+├── rtmdet_nano_person/end2end.engine
+├── rtmpose_s/deploy.json
+└── rtmpose_s/end2end.engine
+```
+
+Install the tested Python environment with
+`python -m pip install -r requirements/pose_fp16.txt` after installing the
+TensorRT distribution compatible with the target CUDA/Python ABI. Source
+`configs/pose/rtmpose_fp16.env.example` (or export the same variables) so the
+launcher selects `DAHUA_CAMPUS6_BACKEND=rtmpose17`,
+`DAHUA_POSE_BACKEND=tensorrt_fp16`, and `DAHUA_POSE_DEVICE=cuda:0`.
+Switching this setting affects only later video-to-skeleton jobs; existing
+COCO-17 skeleton artifacts remain unchanged.
+
 ## Run
 
 The production Web student loads the accepted M1KD QAT INT8 checkpoint through
@@ -95,7 +185,7 @@ a TensorRT, RKNN, or equivalent backend and is not claimed here.
 ```bash
 export DAHUA_CODE_ROOT="$PWD"
 export DAHUA_DATA_ROOT="$PWD/runtime"
-export DAHUA_CAMPUS6_DEPLOY_CONFIG="$PWD/third_party/ProtoGCN/configs/campus6/rtmpose26_k400_2d_gap_full.py"
+export DAHUA_CAMPUS6_DEPLOY_CONFIG="$PWD/third_party/ProtoGCN/configs/campus6/rtm_s_coco17_k400_2d_gap_full.py"
 export DAHUA_CAMPUS6_DEPLOYMENT_CHECKPOINT="$PWD/models/student/M1KD.int8.pt"
 
 python -m dahua_cup.pipeline.rtmpose17_pose_worker --help
@@ -159,12 +249,43 @@ Campus6 既有 COCO-17 / 上传视频
 | `GET /api/capabilities`、`/api/system`、`/api/gpus` | 系统、模型和 GPU 状态。 |
 | `GET /api/dashboard`、`/api/models/status`、`/api/training/status` | 运行、模型和训练状态。 |
 | `GET/PUT /api/macro-parameters` | 读取或更新难例门控参数。 |
+| `GET/PUT /api/qwen-remote` | 配置优先使用的服务器 Qwen SSH 通道。 |
+| `GET/PUT /api/qwen-api` | 配置非密钥的 Qwen OpenAI 兼容 API 备用通道；密钥仅由环境变量读取。 |
 | `GET /api/samples`、`/api/samples/{sample_id}`、`/api/samples/{sample_id}/prediction` | 样本、预测和审核详情。 |
 | `GET /api/samples/{sample_id}/media/pose` | 匿名骨架视频。 |
 | `GET /api/hard-samples` | 待审核难例队列。 |
 | `POST /api/samples/{sample_id}/jobs`、`GET /api/jobs/{job_id}` | 提交或查询处理任务。 |
+| `POST /api/gcn/upload` | 上传本机视频并启动本机 RTMDet/RTMPose → ProtoGCN；仅门控触发时调用远端 Qwen。 |
 | `POST /api/samples/{sample_id}/review`、`POST /api/samples/{sample_id}/undo`、`POST /api/reviews/undo-last` | 提交或撤销审核。 |
 | `POST /api/samples/import-manifest`、`POST /api/datasets/export` | 导入样本或导出审核数据。 |
 
 未知的非 `/api` 路径由 `visualization/` 静态页面处理；前端不接收原始 RGB 视频，
 只请求服务器派生的骨架媒体。
+
+### 本机 GCN 推理与 50 条增量闭环
+
+“GCN 推理可视化”页面把 RGB 视频上传到**运行 Web 的本机**。本机依次执行
+RTMDet/RTMPose COCO-17 和 Campus6 ProtoGCN；Qwen 不是本机依赖，只有门控触发时
+才通过已保存的 SSH 配置向服务器传输骨架特征、骨架视频和学生结果。
+
+人工审核确认的难例（显式 `human_reviewed_hard_sample`，或人工标签与学生标签不一致）
+会复制到 `dataset/campus_increment/`。该目录始终保有与基线相同的
+`annotations_with_all.pkl` 形态；后台每分钟检查一次，达到或超过 50 条时将**全部当前
+待处理难例**冻结，使用固定的分组、分层 70/15/15 划分生成训练输入。若一分钟检查时
+已有 53 条，则 53 条会一起进入同一轮，不会只上传前 50 条。
+
+启用远程训练时，冻结的 `training_annotations_with_all.pkl` 上传到服务器并得到 SCP 成功
+确认后，本地会将该批次合并进初始等同于 `campus6_baseline` 的 `dataset/campus_all/`，并
+清理 `campus_increment` 的已上传样本；服务器随后继续训练。该远程任务运行在后台，不会
+获取或终止本地 RTMPose/ProtoGCN 视频推理任务。上传失败时本地数据保留；上传已确认但
+远程训练失败时，服务器保留冻结标注和工作目录以便追溯/重试。可用 `DAHUA_DATASET_ROOT`、
+`DAHUA_INCREMENTAL_BATCH_SIZE` 和 `DAHUA_INCREMENTAL_TRAIN_COMMAND` 覆盖默认位置、
+阈值和训练命令。
+
+如果已在 **系统设置** 启用 Qwen SSH 连接，达到 50 条时会复用同一受信服务器：上传冻结的
+`training_annotations_with_all.pkl`，在服务器端自动挑选一张空闲 GPU（至少 20 GiB 空闲、利用率
+不高于 10%）启动 10 epoch ProtoGCN 微调。远程训练是上传确认后的后台步骤；本地视频推理保持
+可用。可用
+`DAHUA_INCREMENTAL_REMOTE_ENABLED=0` 强制使用本地训练；远程 Python、初始 FP32 权重和 GPU 可通过
+`DAHUA_INCREMENTAL_REMOTE_PYTHON`、`DAHUA_INCREMENTAL_REMOTE_INIT_CHECKPOINT`、
+`DAHUA_INCREMENTAL_REMOTE_GPU_ID` 覆盖。

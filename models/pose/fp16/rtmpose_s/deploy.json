@@ -1,0 +1,16 @@
+{
+    "version": "1.3.1",
+    "task": "PoseDetector",
+    "models": [
+        {
+            "name": "topdownposeestimator",
+            "net": "end2end.engine",
+            "weights": "",
+            "backend": "tensorrt",
+            "precision": "FP16",
+            "batch_size": 1,
+            "dynamic_shape": false
+        }
+    ],
+    "customs": []
+}

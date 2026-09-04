@@ -1,0 +1,31 @@
+# Validated TensorRT FP16 runtime for:
+#   RTMDet-nano-person + RTMPose-S (COCO-17), via MMDeploy 1.3.1.
+#
+# Reference server ABI:
+#   Python 3.8 | torch 1.10.2 (CUDA 11.3) | TensorRT 8.6.1
+# torch==1.10.2 and tensorrt==8.6.1 are installed from the CUDA/NVIDIA
+# distributions on the reference server (the exact wheels depend on the host).
+# These pins describe the tested Python packages. TensorRT itself is supplied
+# by the NVIDIA distribution and must be installed for the target GPU/CUDA
+# ABI; do not let pip silently replace the existing CUDA-enabled torch build.
+numpy==1.23.5
+opencv-contrib-python==5.0.0.93
+protobuf==3.20.2
+h5py==3.11.0
+mmcv==2.1.0
+mmengine==0.10.7
+mmdet==3.3.0
+mmpose==1.3.2
+mmdeploy==1.3.1
+mmdeploy-runtime-gpu==1.3.1
+onnx==1.16.2
+onnxruntime==1.16.3
+
+# Runtime environment (export before launching the Web service or worker):
+#   export DAHUA_CAMPUS6_BACKEND=rtmpose17
+#   export DAHUA_POSE_BACKEND=tensorrt_fp16
+#   export DAHUA_POSE_DEVICE=cuda:0
+#   export DAHUA_POSE_FP16_MODEL_ROOT="$DAHUA_CODE_ROOT/models/pose/fp16"
+#   export DAHUA_RTMPOSE_PYTHON=/path/to/python-with-mmdeploy-runtime/bin/python
+# The server additionally needs TensorRT shared libraries discoverable through
+# LD_LIBRARY_PATH; see configs/pose/rtmpose_fp16.env.example.

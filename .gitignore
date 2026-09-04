@@ -24,6 +24,7 @@ dataset/
 models/**/*.pth
 models/**/*.pt
 models/**/*.onnx
+models/**/*.engine
 models/**/*.rknn
 models/**/*.task
 !models/MANIFEST.json

@@ -10,7 +10,7 @@ Web 是 Campus6 校园行为识别系统的交付界面，不是数据集筛选�
 
 - 浏览器仅接收 Skeleton 视频、结构化骨架语义、预测与审计结果；不得传输、播放或保存原始 RGB 视频。
 - 原始视频只允许在边缘侧的 RTMDet-S INT8 + RTMPose-S 流程中短暂使用，输出标准 `COCO-17`、最多两人的骨架序列。
-- 正式线上学生模型是 `M1KD QAT INT8 + Logits KD`（5.31 MiB，Test 46/53，All 345/358）；FP32 GAP ProtoGCN 只用于训练、回归与重蒸馏。
+- 正式线上学生模型是 `M1KD QAT INT8 + Logits KD`（5.31 MiB，Test 46/53，All 345/358）；FP32 GAP ProtoGCN 只用于训练、回归与重蒸馏。RTMDet-S/RTMPose-S 与既有 M 特征都遵循同一 COCO-17 契约，因此不重建历史骨架。
 - Qwen3-VL-8B-Instruct 只能接收骨架视频、结构化语义图与学生 Top-K。它在单张满足空闲阈值的 GPU 上按需加载，绝不下载模型到本地。
 - KTH、LIMU、BEHAVE、MediaPipe/NTU 历史候选库不得作为 Web 数据源。
 

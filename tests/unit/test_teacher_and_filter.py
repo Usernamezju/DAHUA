@@ -25,13 +25,17 @@ def teacher(label="normal_walk", probability=0.9):
 
 
 def test_prompt_is_closed_set_and_evidence_based():
-    prompt = build_teacher_prompt("sample", {"segments": [{"id": "s0"}]})
+    prompt = build_teacher_prompt(
+        "sample", {"segments": [{"id": "s0"}]},
+        student_distribution={"normal_walk": 0.7, "normal_run": 0.2},
+    )
     assert "campus6-v1.3" in prompt
     assert "Do not invent" in prompt
     assert "normal_walk" in prompt
     assert "Do not output label" in prompt
     assert "at least one item" in prompt
-    assert "student_distribution" not in prompt
+    assert '"student_distribution"' in prompt
+    assert '"normal_walk": 0.7' in prompt
     assert "two or more people" in prompt
 
 

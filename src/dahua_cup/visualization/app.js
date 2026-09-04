@@ -11,11 +11,12 @@ Object.assign(LABEL_NAME, { unknown: "无法判断", damaged: "视频损坏", ou
 const SAMPLE_LABEL_GROUPS = LABELS.map(([id, name]) => [id, name]);
 
 const state = {
-  capabilities: {}, system: {}, gpus: {}, macroParameters: {}, qwenRemote: {}, dashboard: {}, modelStatus: {}, trainingStatus: {}, samples: [], reviewSamples: [],
+  capabilities: {}, system: {}, gpus: {}, macroParameters: {}, qwenRemote: {}, qwenApi: {}, poseBackend: {}, dashboard: {}, modelStatus: {}, trainingStatus: {}, samples: [], reviewSamples: [],
   sampleTotal: 0, sampleOffset: 0, sampleWindowSize: 500, sampleCursor: 0, reviewTotal: 0,
   hardSamples: [], hardTotal: 0, hardSample: null, hardLoaded: false,
   inferenceSample: null, reviewSample: null, reviewIndex: -1,
   activeJobId: null, jobSubmissionPending: false,
+  gcn: { sampleId: null, jobId: null, uploading: false, sample: null },
   datasetPage: 0, datasetPageSize: 50, datasetTotal: 0,
 };
 
@@ -63,7 +64,7 @@ function setSidebarCollapsed(collapsed) {
 
 function setPage(page) {
   if (page === "review") page = "inference";
-  const titles = {dashboard:"运行总览",inference:"行为识别结果",hard:"待人工审核难例",dataset:"审计记录",training:"增量训练",models:"模型管理",settings:"系统设置"};
+  const titles = {dashboard:"运行总览",inference:"行为识别结果",gcn:"GCN 推理可视化",hard:"待人工审核难例",dataset:"审计记录",training:"增量训练",models:"模型管理",settings:"系统设置"};
   $$(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.page === page));
   $$(".page").forEach(item => item.classList.toggle("active", item.id === `page-${page}`));
   $("#page-title").textContent = titles[page];
@@ -95,12 +96,12 @@ async function loadInferenceSamples(query = "", offset = 0) {
 
 async function refreshAll(preserveSelection = true) {
   try {
-    const [capabilities, system, gpus, macroParameters, qwenRemote, dashboard, modelStatus, trainingStatus, samples, reviewSamples] = await Promise.all([
-      api("/api/capabilities"), api("/api/system"), api("/api/gpus"), api("/api/macro-parameters"), api("/api/qwen-remote"), api("/api/dashboard"), api("/api/models/status"), api("/api/training/status"),
+    const [capabilities, system, gpus, macroParameters, qwenRemote, qwenApi, poseBackend, dashboard, modelStatus, trainingStatus, samples, reviewSamples] = await Promise.all([
+      api("/api/capabilities"), api("/api/system"), api("/api/gpus"), api("/api/macro-parameters"), api("/api/qwen-remote"), api("/api/qwen-api"), api("/api/pose-backend"), api("/api/dashboard"), api("/api/models/status"), api("/api/training/status"),
       fetchSampleSummaries({limit:state.sampleWindowSize,include_teacher:false}), fetchSampleSummaries({status:"pending",limit:50,include_teacher:false}),
     ]);
     Object.assign(state, {
-      capabilities, system, gpus, macroParameters, qwenRemote, dashboard, modelStatus, trainingStatus,
+      capabilities, system, gpus, macroParameters, qwenRemote, qwenApi, poseBackend, dashboard, modelStatus, trainingStatus,
       samples: samples.items, sampleTotal: samples.total, sampleOffset: samples.offset, sampleCursor: 0,
       reviewSamples: reviewSamples.items, reviewTotal: reviewSamples.total,
       hardSamples: [], hardTotal: 0, hardSample: null, hardLoaded: false,
@@ -419,6 +420,107 @@ async function submitHardReview(finalLabel) {
   } catch(error){toast(error.message,true);}
 }
 
+function gcnStageFor(job) {
+  if (!job) return "upload";
+  if (job.status === "completed") return "done";
+  if (job.status === "failed") return "failed";
+  const message = String(job.message || "");
+  if (/Qwen|大模型|语义补充/.test(message) || Number(job.progress) >= .86) return "teacher";
+  if (/ProtoGCN|GCN 分类/.test(message) || Number(job.progress) >= .70) return "student";
+  return "pose";
+}
+
+function renderGcnJob(job) {
+  const stage = gcnStageFor(job);
+  const stateRoot = $("#gcn-job-state"), message = $("#gcn-job-message"), bar = $("#gcn-progress-bar");
+  if (!stateRoot || !message || !bar) return;
+  const failed = stage === "failed";
+  stateRoot.className = `status-pill ${failed ? "disabled" : ["queued", "running"].includes(job?.status) ? "online" : "disabled"}`;
+  stateRoot.textContent = failed ? "处理失败" : job ? titleForStatus(job.status) : "未开始";
+  message.textContent = job?.message || "选择视频后开始。";
+  bar.style.width = `${Math.max(0, Math.min(100, Number(job?.progress || 0) * 100))}%`;
+  const order = ["upload", "pose", "student", "teacher", "done"];
+  const current = order.indexOf(stage);
+  $$("#gcn-stages li").forEach(item => {
+    const index = order.indexOf(item.dataset.stage);
+    item.classList.toggle("done", current > index || stage === "done");
+    item.classList.toggle("active", current === index && stage !== "done");
+    item.classList.toggle("failed", failed && index === current);
+  });
+  $("#gcn-local-status").className = `status-pill ${["queued", "running"].includes(job?.status) ? "online" : "disabled"}`;
+  $("#gcn-local-status").textContent = ["queued", "running"].includes(job?.status) ? "本机处理中" : job?.status === "completed" ? "本机处理完成" : failed ? "需检查本机环境" : "等待视频";
+}
+
+function renderGcnSample(sample) {
+  if (!sample) return;
+  state.gcn.sample = sample;
+  const poseVideo = $("#gcn-pose-video"), posePlaceholder = $("#gcn-pose-placeholder"), poseStatus = $("#gcn-pose-status");
+  const available = Boolean(sample.artifacts?.pose_video);
+  setVideo(poseVideo, available ? sample.media?.pose : "");
+  poseStatus.textContent = available ? "已生成" : "处理中";
+  if (posePlaceholder) posePlaceholder.classList.toggle("hidden", available);
+  const root = $("#gcn-prediction-list"), prediction = sample.prediction;
+  if (!prediction?.topk?.length) {
+    root.className = "prediction-list empty-state";
+    root.textContent = "本机 GCN 正在等待骨架特征";
+  } else {
+    root.className = "prediction-list";
+    root.innerHTML = prediction.topk.map((item, index) => `<div class="prediction-row"><span class="rank">${index + 1}</span><span>${escapeHtml(LABEL_NAME[item.label] || item.label)}</span><div class="score-track"><span style="width:${Math.max(1, item.score * 100)}%"></span></div><strong>${(item.score * 100).toFixed(1)}%</strong></div>`).join("");
+  }
+  const teacherRoot = $("#gcn-teacher-result"), teacher = sample.teacher || {}, gate = prediction?.teacher_gate || {};
+  if (teacher.status === "completed" && teacher.result) {
+    const value = teacher.result, label = value.label || value.suggested_label;
+    teacherRoot.className = "teacher-result compact";
+    teacherRoot.innerHTML = `<strong>服务器 Qwen 已完成语义复核：${escapeHtml(LABEL_NAME[label] || label || "—")}</strong><p>${escapeHtml(value.reason || value.reasoning_summary || "已返回闭集语义判断")}</p>`;
+  } else if (gate.triggered) {
+    teacherRoot.className = "teacher-placeholder compact";
+    teacherRoot.textContent = teacher.status === "failed" ? "服务器 Qwen 调用失败；已保留本机 GCN 结果供人工审核。" : "不确定性门控已触发，正在等待/调用服务器 Qwen。";
+  } else if (prediction) {
+    teacherRoot.className = "teacher-placeholder compact";
+    teacherRoot.textContent = "本机 GCN 结果满足门控条件，未上传至服务器 Qwen。";
+  }
+}
+
+async function startGcnUpload() {
+  const input = $("#gcn-video-file"), file = input?.files?.[0];
+  if (!file) { toast("请选择要处理的视频", true); return; }
+  if (state.gcn.uploading || state.gcn.jobId) { toast("已有本机视频任务正在处理", true); return; }
+  state.gcn.uploading = true;
+  $("#gcn-start").disabled = true;
+  renderGcnJob({status:"queued", progress:.02, message:"正在上传视频到本机服务"});
+  try {
+    const form = new FormData(); form.append("video", file, file.name);
+    const value = await api("/api/gcn/upload", {method:"POST", body:form});
+    state.gcn.uploading = false;
+    state.gcn.sampleId = value.sample.sample_id;
+    state.gcn.jobId = value.job.job_id;
+    renderGcnSample(value.sample); renderGcnJob(value.job);
+    toast("视频已上传，本机 RTMDet/RTMPose 与 ProtoGCN 已开始运行");
+    pollGcnJob(value.job.job_id, value.sample.sample_id);
+  } catch (error) {
+    state.gcn.uploading = false; state.gcn.jobId = null;
+    renderGcnJob({status:"failed", progress:0, message:error.message}); toast(error.message, true);
+  } finally { $("#gcn-start").disabled = false; }
+}
+
+async function pollGcnJob(jobId, sampleId) {
+  try {
+    if (state.gcn.jobId !== jobId) return;
+    const job = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
+    renderGcnJob(job);
+    if (["queued", "running"].includes(job.status)) { setTimeout(() => pollGcnJob(jobId, sampleId), 900); return; }
+    state.gcn.jobId = null;
+    const sample = await api(`/api/samples/${encodeURIComponent(sampleId)}`);
+    renderGcnSample(sample);
+    if (job.status === "completed") {
+      toast("本机 GCN 推理完成");
+      await refreshAll(true);
+    } else toast(job.message || "本机推理失败", true);
+  } catch (error) {
+    state.gcn.jobId = null; toast(error.message, true);
+  }
+}
+
 async function startJob(action, sampleId = state.inferenceSample?.sample_id) {
   if(!sampleId){toast("请先选择样本",true);return;}
   if(state.activeJobId || state.jobSubmissionPending){toast("已有推理任务正在运行，请等待完成");return;}
@@ -492,12 +594,27 @@ async function loadDatasetPage() {
 }
 
 function renderModels() {
+  const pose=state.poseBackend||{}, choices=pose.choices||[];
+  const poseEnabled=Boolean(pose.selected_available);
+  const poseOptions=choices.map(choice=>`<option value="${escapeHtml(choice.id)}" ${choice.selected?"selected":""} ${choice.available?"":"disabled"}>${escapeHtml(choice.name)}${choice.available?"":"（未就绪）"}</option>`).join("");
   const models=[
-    ["骨架提取模型","RTMDet-S + RTMPose-S","双人 COCO-17 骨架提取与匿名化跟踪",state.capabilities.pose_extraction?.enabled],
+    ["骨架提取模型",poseOptions,"双人 COCO-17 骨架提取与匿名化跟踪；切换仅影响后续任务。",poseEnabled,"pose-backend-select"],
     ["GCN 模型","M1KD QAT INT8 + Logits KD","5.31 MB 量化蒸馏六分类模型",state.capabilities.campus6_inference?.enabled],
     ["多模态大模型","Qwen3-VL-8B","基于骨架视频与结构化语义分析难例",state.capabilities.qwen_teacher?.enabled],
   ];
-  $("#model-grid").innerHTML=models.map(([type,name,desc,enabled])=>`<article class="panel model-card compact"><div class="panel-head"><div class="model-icon">◈</div><span class="status-pill ${enabled?"online":"disabled"}">${enabled?"可运行":"不可用"}</span></div><label>${type}</label><select class="model-select" aria-label="${type}"><option selected>${name}</option></select><p>${desc}</p></article>`).join("");
+  $("#model-grid").innerHTML=models.map(([type,name,desc,enabled,id])=>`<article class="panel model-card compact"><div class="panel-head"><div class="model-icon">◈</div><span class="status-pill ${enabled?"online":"disabled"}">${enabled?"可运行":"不可用"}</span></div><label>${type}</label><select class="model-select" ${id?`id="${id}"`:""} aria-label="${type}" ${id?"":"disabled"}>${id?name:`<option selected>${name}</option>`}</select><p>${desc}</p></article>`).join("");
+  const selector=$("#pose-backend-select");
+  if(selector) selector.onchange=async()=>{
+    const previous=pose.selected;
+    try{
+      state.poseBackend=await api("/api/pose-backend",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({backend_id:selector.value})});
+      await refreshAll(true);
+      toast("骨架提取模型已切换；仅影响后续任务");
+    }catch(error){
+      selector.value=previous;
+      toast(error.message,true);
+    }
+  };
 }
 
 function modelReleaseMarkup() {
@@ -518,13 +635,14 @@ function durationText(seconds) {
 function renderTrainingStatus() {
   const root=$("#training-status");if(!root)return;
   const value=state.trainingStatus||{},running=Boolean(value.running);
-  root.innerHTML=`<div class="training-metrics"><article class="panel"><span>当前状态</span><strong>${running?"正在训练":value.status==="failed"?"训练异常":"未训练"}</strong></article><article class="panel"><span>上次训练后新增数据</span><strong>${value.new_sample_count||0} 条</strong></article><article class="panel"><span>当前阶段</span><strong>${({waiting_for_data:"等待新增数据",train:"模型训练",validate:"模型评估",completed:"训练完成"})[value.stage]||value.stage||"—"}</strong></article><article class="panel"><span>预计剩余</span><strong>${running?durationText(value.estimated_remaining_seconds):"—"}</strong></article></div><article class="panel training-progress-card"><div class="panel-head"><div><h3>${running?"增量训练进行中":"增量训练状态"}</h3><p>最近训练：${formatTime(value.last_training_at)}</p></div><span class="status-pill ${running?"online":"disabled"}">${running?`${Math.round((value.progress||0)*100)}%`:"IDLE"}</span></div><div class="training-progress"><span style="width:${Math.max(0,Math.min(100,(value.progress||0)*100))}%"></span></div>${value.message?`<p>${escapeHtml(value.message)}</p>`:""}</article>${modelReleaseMarkup()}`;
+  root.innerHTML=`<div class="training-metrics"><article class="panel"><span>当前状态</span><strong>${running?"正在训练":value.status==="failed"?"训练异常":"未训练"}</strong></article><article class="panel"><span>上次训练后新增数据</span><strong>${value.new_sample_count||0} 条</strong></article><article class="panel"><span>当前阶段</span><strong>${({waiting_for_data:"等待新增数据",upload:"冻结、划分并上传",train:"服务器模型训练",merge:"合并本地记录",validate:"模型评估",completed:"训练完成"})[value.stage]||value.stage||"—"}</strong></article><article class="panel"><span>预计剩余</span><strong>${running?durationText(value.estimated_remaining_seconds):"—"}</strong></article></div><article class="panel training-progress-card"><div class="panel-head"><div><h3>${running?"增量训练进行中":"增量训练状态"}</h3><p>最近训练：${formatTime(value.last_training_at)}</p></div><span class="status-pill ${running?"online":"disabled"}">${running?`${Math.round((value.progress||0)*100)}%`:"IDLE"}</span></div><div class="training-progress"><span style="width:${Math.max(0,Math.min(100,(value.progress||0)*100))}%"></span></div>${value.message?`<p>${escapeHtml(value.message)}</p>`:""}</article>${modelReleaseMarkup()}`;
 }
 
 function renderSettings() {
   renderMacroParameters();
   renderGpuSettings();
   renderQwenRemoteSettings();
+  renderQwenApiSettings();
 }
 
 function renderQwenRemoteSettings() {
@@ -541,12 +659,46 @@ function qwenRemotePayload(){return {enabled:$("#qwen-remote-enabled").checked,h
 
 async function saveQwenRemoteSettings(){try{state.qwenRemote=await api("/api/qwen-remote",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(qwenRemotePayload())});renderQwenRemoteSettings();state.capabilities=await api("/api/capabilities");renderCapabilities();toast("Qwen 云端连接已保存，后续任务立即生效");}catch(error){toast(error.message,true)}}
 async function testQwenRemoteSettings(){try{await saveQwenRemoteSettings();await api("/api/qwen-remote/test",{method:"POST"});toast("Qwen 云端 SSH 连接和项目根目录验证成功");}catch(error){toast(error.message,true)}}
-async function provisionQwenRemote(){try{await saveQwenRemoteSettings();const button=$("#provision-qwen-remote");button.disabled=true;button.textContent="正在初始化…";await api("/api/qwen-remote/provision",{method:"POST"});toast("云端代码与 Qwen 虚拟环境已初始化");}catch(error){toast(error.message,true)}finally{const button=$("#provision-qwen-remote");if(button){button.disabled=false;button.textContent="初始化云端环境";}}}
+async function provisionQwenRemote(){try{await saveQwenRemoteSettings();const button=$("#provision-qwen-remote");button.disabled=true;button.textContent="正在初始化…";const data=await api("/api/qwen-remote/provision",{method:"POST"});toast(data.message||"云端代码与 Qwen 虚拟环境已初始化");}catch(error){toast(error.message,true)}finally{const button=$("#provision-qwen-remote");if(button){button.disabled=false;button.textContent="初始化云端环境";}}}
+
+function renderQwenApiSettings(){
+  const value=state.qwenApi||{};
+  const fields={
+    "qwen-api-enabled":Boolean(value.enabled), "qwen-api-model":value.model||"qwen3-vl-flash",
+    "qwen-api-endpoint":value.endpoint||"https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    "qwen-api-key-env":value.api_key_env||"DASHSCOPE_API_KEY", "qwen-api-timeout":value.timeout_seconds||180,
+    "qwen-api-attempts":value.max_attempts||2, "qwen-api-frames":value.max_frames||8,
+    "qwen-api-clear-key":false,
+  };
+  Object.entries(fields).forEach(([id,current])=>{const input=$("#"+id);if(!input)return;if(input.type==="checkbox")input.checked=current;else input.value=current;});
+  const status=$("#qwen-api-status"), hint=$("#qwen-api-hint");
+  const keyInput=$("#qwen-api-key");if(keyInput)keyInput.value="";
+  if(status){const available=Boolean(value.available);status.textContent=available?"备用可用":value.enabled?"缺少密钥":"未启用";status.className=`status-pill ${available?"online":"disabled"}`;}
+  if(hint){const source=value.credential_source==="environment"?"环境变量":value.credential_source==="web_settings"?"Web 已保存密钥":"";hint.textContent=value.available?`已检测到${source}；云端/本机教师失败时将自动调用 API。`:value.reason||"请在本页填写 API Key，或在启动服务的终端设置 DASHSCOPE_API_KEY。";}
+}
+
+function qwenApiPayload(){return {enabled:$("#qwen-api-enabled").checked,endpoint:$("#qwen-api-endpoint").value.trim(),model:$("#qwen-api-model").value.trim(),api_key_env:$("#qwen-api-key-env").value.trim(),timeout_seconds:Number($("#qwen-api-timeout").value),max_attempts:Number($("#qwen-api-attempts").value),max_frames:Number($("#qwen-api-frames").value),api_key:$("#qwen-api-key").value,clear_api_key:$("#qwen-api-clear-key").checked};}
+
+async function saveQwenApiSettings(){try{state.qwenApi=await api("/api/qwen-api",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(qwenApiPayload())});renderQwenApiSettings();state.capabilities=await api("/api/capabilities");renderCapabilities();toast(state.qwenApi.available?"Qwen API 备用教师已启用":"已保存；请确认服务环境变量中存在 API Key");}catch(error){toast(error.message,true)}}
 
 function macroInputAttrs(type) {
   if (type === "unit_interval") return 'step="0.01" min="0" max="1"';
   if (type === "positive_float") return 'step="0.1" min="0.0001"';
-  return 'step="1000" min="0"';
+  return 'step="1" min="1"';
+}
+
+function renderMacroGroup(root, groupKey, groups, parameters) {
+  if (!root) return;
+  const items = parameters.filter(item => item.group === groupKey);
+  if (!items.length) { root.innerHTML = ""; return; }
+  const cards = items.map(item => {
+    const disabled = item.source === "environment" ? "disabled" : "";
+    return `<label class="macro-item">
+      <span class="macro-item-head"><strong>${escapeHtml(item.name)}</strong></span>
+      <span class="macro-input-row"><input type="number" data-macro-key="${escapeHtml(item.key)}" value="${item.value}" ${macroInputAttrs(item.type)} ${disabled}></span>
+    </label>`;
+  }).join("");
+  root.innerHTML = `<div class="macro-group"><div class="macro-group-title">${escapeHtml(groups[groupKey] || groupKey)}</div><div class="macro-group-grid">${cards}</div></div>`;
 }
 
 function renderMacroParameters() {
@@ -554,47 +706,37 @@ function renderMacroParameters() {
   if (!root || !state.macroParameters?.parameters) return;
   // Preserve in-progress edits across re-renders (refresh, apply).
   const dirty = {};
-  $$("#macro-grid input[data-macro-key]").forEach(input => {
+  $$(".macro-grid input[data-macro-key]").forEach(input => {
     if (input.dataset.dirty === "1") dirty[input.dataset.macroKey] = input.value;
   });
   const groups = state.macroParameters.groups || {};
   const parameters = state.macroParameters.parameters || [];
-  root.innerHTML = ["gate"].map(groupKey => {
-    const items = parameters.filter(item => item.group === groupKey);
-    if (!items.length) return "";
-    const cards = items.map(item => {
-      const disabled = item.source === "environment" ? "disabled" : "";
-      return `<label class="macro-item">
-        <span class="macro-item-head"><strong>${escapeHtml(item.name)}</strong></span>
-        <span class="macro-input-row"><input type="number" data-macro-key="${escapeHtml(item.key)}" value="${item.value}" ${macroInputAttrs(item.type)} ${disabled}></span>
-      </label>`;
-    }).join("");
-    return `<div class="macro-group"><div class="macro-group-title">${escapeHtml(groups[groupKey] || groupKey)}</div><div class="macro-group-grid">${cards}</div></div>`;
-  }).join("");
+  renderMacroGroup($("#macro-grid"), "gate", groups, parameters);
+  renderMacroGroup($("#incremental-macro-grid"), "incremental", groups, parameters);
   Object.entries(dirty).forEach(([key, value]) => {
-    const input = root.querySelector(`input[data-macro-key="${key}"]`);
+    const input = document.querySelector(`input[data-macro-key="${key}"]`);
     if (input && !input.disabled) { input.value = value; input.dataset.dirty = "1"; }
   });
 }
 
-async function applyMacroParameters() {
+async function applyMacroParameters(gridSelector = "#macro-grid") {
   const values = {};
-  $$("#macro-grid input[data-macro-key]").forEach(input => {
+  $$(`${gridSelector} input[data-macro-key]`).forEach(input => {
     if (input.disabled) return;
     values[input.dataset.macroKey] = Number(input.value);
   });
   if (!Object.keys(values).length) { toast("没有可应用的宏参数", true); return; }
   try {
     state.macroParameters = await api("/api/macro-parameters", {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values})});
-    $$("#macro-grid input[data-macro-key]").forEach(input => { delete input.dataset.dirty; });
+    $$(`${gridSelector} input[data-macro-key]`).forEach(input => { delete input.dataset.dirty; });
     renderMacroParameters();
     toast("宏参数已应用并保存，后续新任务立即生效");
   } catch (error) { toast(error.message, true); }
 }
 
-function resetMacroParameters() {
+function resetMacroParameters(gridSelector = "#macro-grid") {
   const list = state.macroParameters?.parameters || [];
-  $$("#macro-grid input[data-macro-key]").forEach(input => {
+  $$(`${gridSelector} input[data-macro-key]`).forEach(input => {
     if (input.disabled) return;
     const spec = list.find(item => item.key === input.dataset.macroKey);
     if (spec) { input.value = spec.default; input.dataset.dirty = "1"; }
@@ -649,6 +791,11 @@ function bindEvents() {
   $$("[data-goto]").forEach(button=>button.onclick=()=>setPage(button.dataset.goto));
   $("#sidebar-toggle").onclick=()=>setSidebarCollapsed(!document.body.classList.contains("sidebar-collapsed"));
   $("#refresh-button").onclick=()=>refreshAll(true);
+  if($("#gcn-video-file")) $("#gcn-video-file").onchange=event=>{
+    const file=event.target.files?.[0];
+    $("#gcn-file-name").textContent=file ? `${file.name} · ${(file.size/1024/1024).toFixed(2)} MB` : "支持 MP4、AVI、MOV、MKV、WebM、MPEG；原始视频仅保存于本机服务。";
+  };
+  if($("#gcn-start")) $("#gcn-start").onclick=startGcnUpload;
   $("#sample-tree-toggle").onclick=event=>{event.stopPropagation();setSampleTreeOpen($("#sample-tree-menu").classList.contains("hidden"))};
   $("#sample-tree-menu").onclick=event=>event.stopPropagation();
   $("#inference-search").onclick=event=>{event.stopPropagation();setSampleTreeOpen(true)};
@@ -662,10 +809,13 @@ function bindEvents() {
   if($("#save-qwen-remote"))$("#save-qwen-remote").onclick=saveQwenRemoteSettings;
   if($("#test-qwen-remote"))$("#test-qwen-remote").onclick=testQwenRemoteSettings;
   if($("#provision-qwen-remote"))$("#provision-qwen-remote").onclick=provisionQwenRemote;
+  if($("#save-qwen-api"))$("#save-qwen-api").onclick=saveQwenApiSettings;
   if($("#teacher-gpu-auto"))$("#teacher-gpu-auto").onchange=event=>$$('input[data-gpu-kind="teacher"]').forEach(input=>input.disabled=event.target.checked);
-  if($("#apply-macro-parameters"))$("#apply-macro-parameters").onclick=applyMacroParameters;
-  if($("#reset-macro-parameters"))$("#reset-macro-parameters").onclick=resetMacroParameters;
-  if($("#macro-grid"))$("#macro-grid").addEventListener("input",event=>{if(event.target.dataset.macroKey)event.target.dataset.dirty="1";});
+  if($("#apply-macro-parameters"))$("#apply-macro-parameters").onclick=()=>applyMacroParameters("#macro-grid");
+  if($("#reset-macro-parameters"))$("#reset-macro-parameters").onclick=()=>resetMacroParameters("#macro-grid");
+  if($("#apply-incremental-macro-parameters"))$("#apply-incremental-macro-parameters").onclick=()=>applyMacroParameters("#incremental-macro-grid");
+  if($("#reset-incremental-macro-parameters"))$("#reset-incremental-macro-parameters").onclick=()=>resetMacroParameters("#incremental-macro-grid");
+  $$(".macro-grid").forEach(grid=>grid.addEventListener("input",event=>{if(event.target.dataset.macroKey)event.target.dataset.dirty="1";}));
   if($("#hard-sample-select"))$("#hard-sample-select").onchange=event=>selectHardSample(event.target.value);
   if($("#hard-sample-prev"))$("#hard-sample-prev").onclick=()=>moveHardSample(-1);
   if($("#hard-sample-next"))$("#hard-sample-next").onclick=()=>moveHardSample(1);

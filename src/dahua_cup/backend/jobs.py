@@ -19,14 +19,20 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from dahua_cup.pipeline.common import render_command
+from dahua_cup.semantic_teacher.incremental.campus_dataset import (
+    CampusIncrementalDataset,
+    IncrementalRound,
+)
 from dahua_cup.semantic_teacher.prompts.prompt_builder import PROMPT_VERSION
 
 from .baseline import Campus6Baseline
 from .config import Settings
 from .gpu import GPUManager
 from .hard_samples import evaluate_hard_sample
+from .qwen_api import run_qwen_api
 from .remote import (
     provision_remote as provision_qwen_remote,
+    run_remote_incremental_training,
     run_remote_qwen,
     test_connection as test_qwen_remote_connection,
 )
@@ -331,6 +337,20 @@ class JobManager:
         self._futures: set[Future] = set()
         self._continuous_stop = threading.Event()
         self._continuous_thread: Optional[threading.Thread] = None
+        # Keep JobManager usable by small test/tool Settings stubs which only
+        # provide the worker-related fields.  Real Web Settings always expose
+        # the explicit dataset/runtime properties.
+        repository_root = Path(settings.repository_root)
+        self.incremental = CampusIncrementalDataset(
+            Path(getattr(settings, "dataset_root", repository_root / "dataset")),
+            Path(getattr(settings, "runtime_root", repository_root / "runtime")),
+            batch_size=int(getattr(settings, "incremental_batch_size", 50)),
+            seed=int(getattr(settings, "incremental_seed", 20260827)),
+        )
+        self.incremental.ensure_layout()
+        self._incremental_lock = threading.Lock()
+        self._incremental_future: Optional[Future] = None
+        self._next_incremental_check = 0.0
         self._continuous_status = {
             "enabled": False,
             "state": "stopped",
@@ -513,6 +533,7 @@ class JobManager:
                 )
             except (KeyError, TypeError, ValueError):
                 remaining = None
+        dataset = self.incremental.status()
         return {
             "schema_version": "incremental_training_status.v1",
             "status": status,
@@ -522,12 +543,132 @@ class JobManager:
             "started_at": value.get("started_at"),
             "updated_at": value.get("updated_at"),
             "last_training_at": last_training_at,
-            "new_sample_count": self.store.count_incremental_samples(
-                last_training_at
-            ),
+            "new_sample_count": dataset["staged_sample_count"],
+            "incremental_dataset": dataset,
             "estimated_remaining_seconds": remaining if running else None,
             "message": value.get("message") or "",
         }
+
+    @property
+    def _incremental_status_path(self) -> Path:
+        return self.settings.runtime_root / "settings" / "incremental_training.json"
+
+    def _write_incremental_status(self, **value: object) -> None:
+        payload = {"schema_version": "incremental_training_status.v1", **value}
+        path = self._incremental_status_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+
+    def enroll_reviewed_hard_sample(self, sample_id: str) -> dict:
+        """Materialize a human-confirmed hard example in campus_increment.
+
+        The review itself remains valid when the feature is not available yet:
+        a later call (or a retry after inference) can stage it without asking
+        the reviewer to relabel the sample.
+        """
+        sample = self.store.get_sample(sample_id)
+        if not sample.get("incremental_pool") or sample.get("status") != "reviewed":
+            return {"staged": False, "reason": "not_human_confirmed_hard_sample", **self.incremental.status()}
+        paths = self.artifacts(sample_id)
+        try:
+            result = self.incremental.stage(
+                sample,
+                feature_path=paths["feature"],
+            )
+        except FileNotFoundError:
+            return {"staged": False, "reason": "waiting_for_pose_artifact", **self.incremental.status()}
+        # Upload/training is deliberately scheduled by the one-minute monitor,
+        # so a browser review never blocks on a large SSH transfer.
+        return result
+
+    def _start_incremental_training_if_ready(self) -> dict:
+        """Queue one scheduled upload at most once, without occupying local GPUs."""
+        with self._incremental_lock:
+            if self._incremental_future and not self._incremental_future.done():
+                return {"queued": False, "reason": "already_running"}
+            state = self.incremental.status()
+            if not state["ready"]:
+                return {"queued": False, "reason": "batch_not_ready"}
+            self._incremental_future = self.executor.submit(self._run_incremental_training)
+            self._futures.add(self._incremental_future)
+            self._incremental_future.add_done_callback(self._futures.discard)
+            return {"queued": True, "reason": "batch_ready"}
+
+    def _run_incremental_training(self) -> None:
+        round_: Optional[IncrementalRound] = None
+        try:
+            # Freeze exactly one documented 50-sample batch.  Reviews that
+            # arrive while it trains remain in campus_increment for the next
+            # transaction.
+            round_ = self.incremental.prepare_round()
+            work_dir = round_.root / "work_dir"
+            self._write_incremental_status(
+                status="running", stage="upload", progress=0.10,
+                started_at=_now(), updated_at=_now(), round_id=round_.round_id,
+                sample_count=len(round_.sample_ids),
+                message="{} 条人工确认难例已冻结，并与最多 250 条历史训练样本组成重放集，正在上传服务器".format(
+                    len(round_.sample_ids)
+                ),
+            )
+            remote = getattr(self.settings, "incremental_remote", lambda: {})()
+            if remote.get("enabled"):
+                remote_result = run_remote_incremental_training(
+                    remote,
+                    round_id=round_.round_id,
+                    annotation=round_.training_annotation,
+                    remote_python=self.settings.incremental_remote_python,
+                    init_checkpoint=self.settings.incremental_remote_init_checkpoint,
+                    epochs=10,
+                    gpu_id=self.settings.incremental_remote_gpu_id,
+                )
+                training_metadata = {"execution": "remote_ssh", **remote_result}
+            else:
+                command_template = self.settings.default_incremental_train_command()
+                if not command_template:
+                    raise RuntimeError(
+                        "未配置可用的远程训练服务器，也未配置本地 DAHUA_STUDENT_PYTHON/训练基线"
+                    )
+                values = {
+                    "ann_file": shlex.quote(str(round_.training_annotation)),
+                    "work_dir": shlex.quote(str(work_dir)),
+                    "init_checkpoint": shlex.quote(str(self.settings.training_baseline_checkpoint() or "")),
+                }
+                command = render_command(command_template, **values)
+                with self.exclusive_gpu_slot():
+                    log = self._execute(command)
+                training_metadata = {
+                    "execution": "local",
+                    "command": command,
+                    "log_tail": log[-4000:],
+                }
+            self._write_incremental_status(
+                status="running", stage="merge", progress=0.90,
+                started_at=_now(), updated_at=_now(), round_id=round_.round_id,
+                sample_count=len(round_.sample_ids),
+                message="训练已完成，正在合并 campus_all",
+            )
+            merged = self.incremental.complete_round(
+                round_, training_metadata=training_metadata
+            )
+            self._write_incremental_status(
+                status="completed", stage="completed", progress=1.0,
+                started_at=_now(), updated_at=_now(), round_id=round_.round_id,
+                sample_count=len(round_.sample_ids), message="增量训练成功；已合并 campus_all，本批 campus_increment 已清理",
+                merge=merged,
+            )
+        except Exception as exc:
+            if round_ is not None:
+                self.incremental.fail_round(round_, str(exc))
+            self._write_incremental_status(
+                status="failed", stage="failed", progress=0.0,
+                updated_at=_now(), round_id=round_.round_id if round_ else None,
+                message=str(exc)[:1000],
+            )
 
     def _auto_retry_allowed(self, sample_id: str, action: str) -> bool:
         """Gate automatic resubmission of failed jobs in the continuous loop.
@@ -553,6 +694,7 @@ class JobManager:
         self._continuous_status["state"] = "running"
         while not self._continuous_stop.is_set():
             try:
+                self._poll_incremental_upload()
                 batch = self.store.list_samples(status="pending", limit=200)["items"]
                 submitted = False
                 for item in batch:
@@ -634,6 +776,29 @@ class JobManager:
                 self._continuous_status["last_error"] = f"{type(exc).__name__}: {exc}"
                 self._continuous_stop.wait(20)
 
+    def _poll_incremental_upload(self) -> None:
+        """Every minute, start one remote/local incremental job when >=50 await.
+
+        The check only queues a background future; it never takes an inference
+        GPU slot or waits for SSH, so normal local video jobs keep running.
+        """
+        now = time.monotonic()
+        if now < self._next_incremental_check:
+            return
+        self._next_incremental_check = now + 60.0
+        state = self.incremental.status()
+        if state["staged_sample_count"] < self.incremental.batch_size:
+            return
+        queued = self._start_incremental_training_if_ready()
+        if queued.get("queued"):
+            self._write_incremental_status(
+                status="queued", stage="upload", progress=0.0,
+                updated_at=_now(), sample_count=state["staged_sample_count"],
+                message="每分钟检测到 {} 条人工确认难例，已排队冻结、划分并上传".format(
+                    state["staged_sample_count"]
+                ),
+            )
+
     @contextmanager
     def regular_gpu_slot(self):
         """Allow normal GPU jobs concurrently, but never alongside Qwen8B."""
@@ -685,15 +850,42 @@ class JobManager:
 
     def capability_state(self) -> dict:
         pose_command = self.settings.default_pose_command()
+        pose_backend = self.settings.pose_backend_status()
         student_command = self.settings.default_student_command()
         teacher_command = self.settings.default_teacher_command()
         remote_teacher = self.settings.qwen_remote()
-        teacher_gpus = self.gpus.teacher_availability()
         remote_enabled = bool(remote_teacher["enabled"])
+        qwen_api_status = getattr(
+            self.settings,
+            "qwen_api_status",
+            lambda: {"enabled": False, "available": False, "reason": "未配置 Qwen API 备用通道"},
+        )()
+        api_enabled = bool(qwen_api_status.get("available"))
+        # A configured remote Qwen host does not need (and must not block on)
+        # a local nvidia-smi probe.  This matters for CPU-only workstations.
+        teacher_gpus = (
+            {
+                "enabled": True,
+                "gpu_ids": [],
+                "required_gpu_count": 0,
+                "minimum_free_memory_mb": 0,
+                "maximum_utilization_percent": 0,
+                "idle_gpu_ids": [],
+                "selection_mode": "remote",
+                "permitted_gpu_ids": [],
+            }
+            if remote_enabled else self.gpus.teacher_availability()
+        )
         return {
             "pose_extraction": {
                 "enabled": bool(pose_command),
-                "reason": "" if pose_command else "尚未配置 RTMPose Python 环境或 DAHUA_VIS_POSE_COMMAND",
+                "reason": (
+                    "" if pose_command else
+                    "已选择的 TensorRT 骨架模型尚未导出或验证"
+                    if pose_backend["selected"] in {"tensorrt_fp16", "tensorrt_int8"} else
+                    "尚未配置 RTMPose Python 环境或 DAHUA_VIS_POSE_COMMAND"
+                ),
+                "backend": pose_backend["selected"],
             },
             "campus6_inference": {
                 "enabled": bool(student_command),
@@ -702,11 +894,19 @@ class JobManager:
             "manual_review": {"enabled": True, "reason": ""},
             "dataset_export": {"enabled": True, "reason": ""},
             "qwen_teacher": {
-                "enabled": remote_enabled or (bool(teacher_command) and teacher_gpus["enabled"]),
+                "enabled": (
+                    remote_enabled
+                    or (bool(teacher_command) and teacher_gpus["enabled"])
+                    or api_enabled
+                ),
                 "reason": (
-                    "" if (remote_enabled or (teacher_command and teacher_gpus["enabled"]))
+                    "" if (
+                        remote_enabled
+                        or (teacher_command and teacher_gpus["enabled"])
+                        or api_enabled
+                    )
                     else (
-                        "尚未配置服务器 Qwen 模型或教师 Python 环境"
+                        "尚未配置服务器 Qwen 模型/教师环境，且 Qwen API 备用通道不可用"
                         if not teacher_command else
                         "Qwen3-VL-8B 需要 {} 张空闲 GPU（每张至少 {} MiB、利用率不高于 {}%）；当前可用：{}"
                         .format(
@@ -718,16 +918,55 @@ class JobManager:
                     )
                 ),
                 "gpu_admission": teacher_gpus,
-                "execution": "remote_ssh" if remote_enabled else "local",
+                "execution": (
+                    "remote_ssh_then_qwen_api" if remote_enabled and api_enabled
+                    else "remote_ssh" if remote_enabled
+                    else "local_then_qwen_api" if teacher_command and api_enabled
+                    else "local" if teacher_command
+                    else "qwen_api"
+                ),
+                "api_fallback": {
+                    "enabled": bool(qwen_api_status.get("enabled")),
+                    "available": api_enabled,
+                    "reason": str(qwen_api_status.get("reason") or ""),
+                    "model": str(qwen_api_status.get("model") or ""),
+                },
             },
             "live_camera": {"enabled": False, "reason": "第一阶段只处理服务器文件"},
+        }
+
+    def local_inference_capability(self) -> dict:
+        """Cheap preflight for a local video upload.
+
+        It intentionally does not probe Qwen GPU admission.  The upload only
+        needs the local pose and GCN worker commands; Qwen remains governed by
+        its later uncertainty gate.  This prevents a browser upload from
+        waiting for several ``nvidia-smi`` timeouts on a CPU-only notebook.
+        """
+        pose_command = self.settings.default_pose_command()
+        student_command = self.settings.default_student_command()
+        pose_backend = self.settings.pose_backend_status()
+        return {
+            "pose_extraction": {
+                "enabled": bool(pose_command),
+                "reason": (
+                    "" if pose_command else
+                    "已选择的 TensorRT 骨架模型尚未导出或验证"
+                    if pose_backend["selected"] in {"tensorrt_fp16", "tensorrt_int8"} else
+                    "尚未配置 RTMPose Python 环境或 DAHUA_VIS_POSE_COMMAND"
+                ),
+            },
+            "campus6_inference": {
+                "enabled": bool(student_command),
+                "reason": "" if student_command else "尚未配置 Campus6 ProtoGCN 权重或 Python 环境",
+            },
         }
 
     def test_qwen_remote_connection(self) -> None:
         test_qwen_remote_connection(self.settings.qwen_remote())
 
-    def provision_qwen_remote(self) -> None:
-        provision_qwen_remote(self.settings.qwen_remote())
+    def provision_qwen_remote(self) -> dict:
+        return provision_qwen_remote(self.settings.qwen_remote())
 
     def submit(self, sample_id: str, action: str) -> dict:
         if action not in ACTIONS:
@@ -769,11 +1008,9 @@ class JobManager:
             pose_device = ""
             student_device = ""
             if action in {"pose", "full"}:
-                pose_device = "cuda:{}".format(self.gpus.acquire_device("pose"))
+                pose_device = self._acquire_execution_device("pose")
             if action in {"classify", "full"}:
-                student_device = "cuda:{}".format(
-                    self.gpus.acquire_device("student")
-                )
+                student_device = self._acquire_execution_device("student")
             job = self.store.create_job(
                 sample_id,
                 action,
@@ -787,9 +1024,9 @@ class JobManager:
                 future.add_done_callback(self._futures.discard)
             except Exception:
                 self.active_sample_jobs.pop(sample_id, None)
-                if pose_device:
+                if pose_device.startswith("cuda:"):
                     self.gpus.release_device("pose", int(pose_device.split(":", 1)[1]))
-                if student_device:
+                if student_device.startswith("cuda:"):
                     self.gpus.release_device("student", int(student_device.split(":", 1)[1]))
                 self.store.update_job(
                     job["job_id"],
@@ -800,6 +1037,20 @@ class JobManager:
                 raise
             job["reused"] = False
             return job
+
+    def _acquire_execution_device(self, kind: str) -> str:
+        """Choose CUDA when usable, with an explicit local auto CPU fallback."""
+        mode = getattr(self.settings, "local_inference_device", "server")
+        if mode == "cpu":
+            return "cpu"
+        try:
+            return "cuda:{}".format(self.gpus.acquire_device(kind))
+        except (OSError, RuntimeError, ValueError):
+            # ``auto`` is only used by the local launcher.  Server and forced
+            # GPU modes fail visibly rather than silently changing deployment.
+            if mode == "auto":
+                return "cpu"
+            raise
 
     def _release_active_job(self, sample_id: str, job_id: str) -> None:
         with self.submission_lock:
@@ -860,6 +1111,10 @@ class JobManager:
         logs: List[str] = []
         completion_message = "处理完成"
         pose_blocked = False
+        # The local launcher resolves auto/GPU/CPU before startup.  Server
+        # launches retain scheduler-managed CUDA routing.
+        pose_on_cpu = job.get("pose_device") == "cpu"
+        student_on_cpu = job.get("student_device") == "cpu"
         self.store.update_job(
             job_id, status="running", progress=0.02,
             message="任务已启动", started_at=_now(),
@@ -879,11 +1134,17 @@ class JobManager:
                         "视频必须位于服务器候选数据或 Web 上传目录内"
                     )
             if action in {"pose", "full"}:
+                pose_execution_device = "cpu" if pose_on_cpu else "cuda:0"
+                pose_location = (
+                    "CPU" if pose_on_cpu else "GPU {}".format(
+                        job["pose_device"].split(":", 1)[1]
+                    )
+                )
                 self.store.update_job(
                     job_id,
                     progress=0.30,
-                    message="正在 GPU {} 提取 RTMDet/RTMPose COCO-17 骨架".format(
-                        job["pose_device"].split(":", 1)[1]
+                    message="正在 {} 提取 RTMDet/RTMPose COCO-17 骨架".format(
+                        pose_location
                     ),
                 )
                 values = {
@@ -893,21 +1154,30 @@ class JobManager:
                         "video": video,
                         **paths,
                         "repository_root": self.settings.repository_root,
-                        "device": "cuda:0",
-                        "physical_device": int(job["pose_device"].split(":", 1)[1]),
-                        "delegate": "cuda",
+                        "device": pose_execution_device,
+                        "physical_device": (
+                            "" if pose_on_cpu else
+                            int(job["pose_device"].split(":", 1)[1])
+                        ),
+                        "delegate": "cpu" if pose_on_cpu else "cuda",
                     }.items()
                 }
                 pose_command = render_command(
                     self.settings.default_pose_command(), **values
                 )
-                pose_command = set_command_option(pose_command, "--device", "cuda:0")
+                pose_command = set_command_option(
+                    pose_command, "--device", pose_execution_device
+                )
                 pose_command = set_command_option(pose_command, "--joint-score-threshold", str(self.settings.joint_score_threshold))
-                pose_gpu_id = int(job["pose_device"].split(":", 1)[1])
-                with self.regular_gpu_slot():
-                    logs.append(self._execute(
-                        pose_command, self.gpus.process_environment(pose_gpu_id)
-                    ))
+                if pose_on_cpu:
+                    logs.append(self._execute(pose_command))
+                else:
+                    pose_gpu_id = int(job["pose_device"].split(":", 1)[1])
+                    with self.regular_gpu_slot():
+                        logs.append(self._execute(
+                            pose_command,
+                            self.gpus.process_environment(pose_gpu_id),
+                        ))
                 self.store.update_job(job_id, progress=0.62, message="正在渲染 RTMPose17 骨架视频")
                 command = [
                     sys.executable, "-m", "dahua_cup.pipeline.render_rtmpose17_pose",
@@ -919,6 +1189,21 @@ class JobManager:
                     "--bitrate", self.settings.preview_bitrate,
                 ]
                 logs.append(self._execute(command))
+                # The local browser upload is needed only until RTMPose has
+                # produced the pose feature and skeleton-only preview.  Keep
+                # no RGB copy after that successful conversion.
+                if sample.get("source_dataset") == "local_upload":
+                    raw_root = (self.settings.runtime_root / "videos").resolve()
+                    try:
+                        raw_video = Path(sample["video_path"]).resolve()
+                        raw_video.relative_to(raw_root)
+                        raw_video.unlink(missing_ok=True)
+                        logs.append(
+                            "raw_video_retention=0: removed local RGB upload "
+                            "after pose extraction"
+                        )
+                    except (KeyError, OSError, ValueError):
+                        pass
                 if action == "full":
                     pose_metrics = pose_quality_metrics(paths["feature"])
                     if pose_metrics.get("status") != "ok":
@@ -1000,11 +1285,16 @@ class JobManager:
             if action in {"classify", "full"} and not pose_blocked:
                 if not paths["feature"].is_file():
                     raise FileNotFoundError("尚无骨架特征，请先运行骨架提取")
-                student_gpu_id = int(job["student_device"].split(":", 1)[1])
+                student_execution_device = "cpu" if student_on_cpu else "cuda:0"
+                student_location = (
+                    "CPU" if student_on_cpu else "GPU {}".format(
+                        job["student_device"].split(":", 1)[1]
+                    )
+                )
                 self.store.update_job(
                     job_id,
                     progress=0.72,
-                    message="正在 GPU {} 运行 ProtoGCN 分类".format(student_gpu_id),
+                    message="正在 {} 运行 ProtoGCN 分类".format(student_location),
                 )
                 values = {
                     key: shlex.quote(str(value))
@@ -1013,8 +1303,11 @@ class JobManager:
                         "video": video,
                         **paths,
                         "repository_root": self.settings.repository_root,
-                        "device": "cuda:0",
-                        "physical_device": student_gpu_id,
+                        "device": student_execution_device,
+                        "physical_device": (
+                            "" if student_on_cpu else
+                            int(job["student_device"].split(":", 1)[1])
+                        ),
                         "student_temperature": (
                             self.settings.student_probability_temperature()
                         ),
@@ -1024,7 +1317,7 @@ class JobManager:
                     self.settings.default_student_command(), **values
                 )
                 student_command = set_command_option(
-                    student_command, "--device", "cuda:0"
+                    student_command, "--device", student_execution_device
                 )
                 student_command = set_command_option(
                     student_command,
@@ -1038,11 +1331,15 @@ class JobManager:
                         "--checkpoint",
                         str(active_checkpoint),
                     )
-                with self.regular_gpu_slot():
-                    logs.append(self._execute(
-                        student_command,
-                        self.gpus.process_environment(student_gpu_id),
-                    ))
+                if student_on_cpu:
+                    logs.append(self._execute(student_command))
+                else:
+                    student_gpu_id = int(job["student_device"].split(":", 1)[1])
+                    with self.regular_gpu_slot():
+                        logs.append(self._execute(
+                            student_command,
+                            self.gpus.process_environment(student_gpu_id),
+                        ))
             if action == "full" and not pose_blocked:
                 prediction = self.prediction(job["sample_id"]) or {}
                 pose_metrics = pose_quality_metrics(paths["feature"])
@@ -1133,6 +1430,23 @@ class JobManager:
                             reason="teacher_requested_review",
                             payload={"teacher_gate": gate},
                         )
+                    else:
+                        fused, selected_teacher = self._fuse_teacher_prediction(
+                            prediction,
+                            teacher_payload,
+                            conflict,
+                            minimum_confidence=(
+                                self.settings.teacher_conflict_confidence
+                            ),
+                        )
+                        if selected_teacher:
+                            prediction = fused
+                            self._record_teacher_gate(
+                                paths["prediction"], prediction, gate
+                            )
+                            logs.append(
+                                "teacher_fusion=teacher_selected_for_uncertain_student"
+                            )
                 elif gate["triggered"]:
                     self.store.escalate_hard_sample(
                         job["sample_id"],
@@ -1215,11 +1529,11 @@ class JobManager:
                 log_text="\n".join(logs)[-20000:], finished_at=_now(),
             )
         finally:
-            if job.get("pose_device"):
+            if job.get("pose_device", "").startswith("cuda:"):
                 self.gpus.release_device(
                     "pose", int(job["pose_device"].split(":", 1)[1])
                 )
-            if job.get("student_device"):
+            if job.get("student_device", "").startswith("cuda:"):
                 self.gpus.release_device(
                     "student", int(job["student_device"].split(":", 1)[1])
                 )
@@ -1239,7 +1553,7 @@ class JobManager:
         temporary.replace(path)
 
     def _boolean_teacher_gate(self, prediction: dict, gate: dict) -> dict:
-        """Route Qwen only from the four declared hard-sample conditions."""
+        """Route Qwen only after the mandatory Top-1 confidence gate."""
         from dahua_cup.backend.hard_samples import evaluate_hard_sample
 
         value = dict(prediction)
@@ -1250,9 +1564,13 @@ class JobManager:
             confidence_threshold=self.settings.teacher_trigger_confidence,
             conflict_confidence_threshold=self.settings.teacher_conflict_confidence,
         )
+        # The hard-sample contract deliberately has an outer eligibility gate:
+        # Qwen may run only when P(student Top-1) <= 0.30.  Conditions C1/C5
+        # then decide whether this eligible sample actually enters the teacher
+        # path; high-confidence samples must never be escalated by a secondary
+        # uncertainty signal alone.
         trigger_codes = [
-            code
-            for code in decision["matched_conditions"]
+            code for code in decision["matched_conditions"]
             if code in {"C1", "C5"}
         ]
         gate = dict(gate)
@@ -1265,6 +1583,54 @@ class JobManager:
         })
         return gate
 
+    @staticmethod
+    def _fuse_teacher_prediction(
+        prediction: dict,
+        teacher_payload: dict,
+        conflict: dict,
+        *,
+        minimum_confidence: float,
+    ) -> tuple[dict, bool]:
+        """Use a clear teacher result when the uncertain student agrees enough.
+
+        A high-confidence disagreement remains a human-review case.  The raw
+        student Top-K is retained for audit; ``topk`` becomes the final result
+        consumed by the existing Web view and downstream queue.
+        """
+        result = dict(teacher_payload.get("result") or {})
+        try:
+            confidence = float(result["confidence"])
+            distribution = {
+                str(label): float(score)
+                for label, score in dict(result["distribution"]).items()
+            }
+        except (KeyError, TypeError, ValueError):
+            return prediction, False
+        if (
+            conflict.get("conflict")
+            or result.get("needs_review")
+            or not math.isfinite(confidence)
+            or confidence < minimum_confidence
+            or not distribution
+        ):
+            return prediction, False
+        fused = dict(prediction)
+        fused["student_topk"] = list(prediction.get("topk") or [])
+        fused["topk"] = [
+            {"label": label, "score": score}
+            for label, score in sorted(
+                distribution.items(), key=lambda item: (-item[1], item[0])
+            )
+        ]
+        fused["fusion"] = {
+            "schema_version": "campus6_teacher_fusion.v1",
+            "selected": "teacher",
+            "reason": "student_uncertain_teacher_clear",
+            "teacher_confidence": confidence,
+            "student_top1": (prediction.get("topk") or [{}])[0],
+        }
+        return fused, True
+
     def _execute_teacher(
         self, sample_id: str, video: Path, paths: Dict[str, Path]
     ) -> str:
@@ -1272,10 +1638,17 @@ class JobManager:
             raise FileNotFoundError(
                 "尚无骨架特征或骨架视频，请先运行骨架提取"
             )
+        failures = []
         remote_teacher = self.settings.qwen_remote()
         if remote_teacher["enabled"]:
-            run_remote_qwen(remote_teacher, sample_id, paths, self._execute)
-            return "Qwen 云端教师分析完成"
+            try:
+                run_remote_qwen(remote_teacher, sample_id, paths, self._execute)
+                self._validate_teacher_artifact(paths["teacher"])
+                return "Qwen 云端教师分析完成"
+            except Exception as exc:
+                # The hosted fallback is intentionally a resilience path.  It
+                # is tried only after the preferred self-hosted teacher fails.
+                failures.append("云端 Qwen 失败：{}".format(str(exc)[:300]))
         values = {
             key: shlex.quote(str(value))
             for key, value in {
@@ -1285,30 +1658,84 @@ class JobManager:
                 "repository_root": self.settings.repository_root,
             }.items()
         }
-        teacher_command = render_command(
-            self.settings.default_teacher_command(), **values
-        )
-        with self.teacher_gpu_slot():
-            admission = self.gpus.teacher_availability()
-            if not admission["enabled"]:
-                raise RuntimeError(
-                    "Qwen GPU admission rejected: {} card(s) are required, idle GPUs are {}"
-                    .format(
-                        admission["required_gpu_count"],
-                        admission["idle_gpu_ids"],
-                    )
-                )
-            self.gpus.set_teacher_active(admission["gpu_ids"])
+        local_teacher = self.settings.default_teacher_command()
+        if local_teacher:
             try:
-                self._execute(
-                    teacher_command,
-                    extra_env=self.gpus.teacher_process_environment(
-                        admission["gpu_ids"]
-                    ),
+                teacher_command = render_command(local_teacher, **values)
+                with self.teacher_gpu_slot():
+                    admission = self.gpus.teacher_availability()
+                    if not admission["enabled"]:
+                        raise RuntimeError(
+                            "Qwen GPU admission rejected: {} card(s) are required, idle GPUs are {}"
+                            .format(
+                                admission["required_gpu_count"],
+                                admission["idle_gpu_ids"],
+                            )
+                        )
+                    self.gpus.set_teacher_active(admission["gpu_ids"])
+                    try:
+                        self._execute(
+                            teacher_command,
+                            extra_env=self.gpus.teacher_process_environment(
+                                admission["gpu_ids"]
+                            ),
+                        )
+                        self._validate_teacher_artifact(paths["teacher"])
+                        return "Qwen 本机教师分析完成"
+                    finally:
+                        self.gpus.set_teacher_active([])
+            except Exception as exc:
+                failures.append("本机 Qwen 失败：{}".format(str(exc)[:300]))
+
+        api_status = getattr(
+            self.settings,
+            "qwen_api_status",
+            lambda: {"available": False, "reason": "未配置 Qwen API 备用通道"},
+        )()
+        if api_status.get("available"):
+            try:
+                run_qwen_api(
+                    getattr(self.settings, "qwen_api")(),
+                    sample_id=sample_id,
+                    feature=paths["feature"],
+                    pose_video=paths["pose_video"],
+                    output=paths["teacher"],
+                    prediction=paths["prediction"],
+                    saved_key=getattr(self.settings, "qwen_api_key", lambda: "")(),
                 )
-                return "Qwen 教师分析完成"
-            finally:
-                self.gpus.set_teacher_active([])
+                prefix = "；".join(failures)
+                return (
+                    (prefix + "；") if prefix else ""
+                ) + "已切换至 Qwen API 备用教师分析"
+            except Exception as exc:
+                failures.append("Qwen API 备用通道失败：{}".format(str(exc)[:300]))
+        elif not remote_teacher["enabled"] and not local_teacher:
+            failures.append(str(api_status.get("reason") or "未配置 Qwen API 备用通道"))
+        raise RuntimeError("；".join(failures) or "没有可用的 Qwen 教师执行通道")
+
+    @staticmethod
+    def _validate_teacher_artifact(path: Path) -> None:
+        """Reject a transport-successful but unusable teacher result.
+
+        SSH/worker processes can exit successfully yet leave an interrupted or
+        non-teacher JSON file.  Treat that as a source failure so the hosted
+        fallback is still considered, instead of failing only after the job
+        has already committed to the source.
+        """
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            result = value["result"]
+            if (
+                value.get("schema_version") != "teacher_prediction.v1"
+                or value.get("status") != "completed"
+                or not isinstance(result, dict)
+                or not result.get("label")
+                or not result.get("distribution")
+                or not result.get("evidence")
+            ):
+                raise ValueError("missing completed teacher prediction fields")
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("教师输出文件无效：{}".format(str(exc)[:300])) from exc
 
     def prediction(self, sample_id: str) -> Optional[dict]:
         path = self.artifacts(sample_id)["prediction"]

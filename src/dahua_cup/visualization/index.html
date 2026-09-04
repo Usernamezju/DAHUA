@@ -19,6 +19,7 @@
       <nav id="main-nav">
         <button class="nav-item active" data-page="dashboard" title="运行总览"><i>⌂</i><span>运行总览</span></button>
         <button class="nav-item" data-page="inference" title="行为识别结果"><i>▶</i><span>识别结果</span><b id="pending-badge">0</b></button>
+        <button class="nav-item" data-page="gcn" title="GCN推理可视化"><i>◉</i><span>GCN推理可视化</span></button>
         <button class="nav-item" data-page="hard" title="待人工审核难例"><i>◇</i><span>待人工审核难例</span><b id="hard-badge">0</b></button>
         <button class="nav-item" data-page="dataset" title="审计记录"><i>▦</i><span>审计记录</span></button>
         <button class="nav-item" data-page="training" title="增量训练"><i>↗</i><span>增量训练</span></button>
@@ -110,6 +111,31 @@
           </div>
       </section>
 
+      <section class="page" id="page-gcn">
+        <div class="toolbar panel compact">
+          <label class="sample-browser gcn-upload-picker"><span>选择本机视频</span><span class="gcn-file-inline"><input id="gcn-video-file" type="file" accept="video/mp4,video/x-msvideo,video/quicktime,video/x-matroska,video/webm,video/mpeg"><strong id="gcn-file-name">选择 MP4、AVI、MOV、MKV、WebM、MPEG</strong></span></label>
+          <button id="gcn-start" class="button primary">上传并开始本地推理</button>
+          <div class="toolbar-spacer"></div><span id="gcn-local-status" class="status-pill disabled">等待视频</span>
+        </div>
+        <div class="workbench-layout">
+          <div class="inspection-workspace">
+            <div class="recognition-primary-grid">
+              <article class="panel video-panel"><div class="panel-head"><div><span class="panel-kicker">SKELETON-ONLY · LOCAL</span><h3>RTMDet/RTMPose COCO-17 骨架</h3></div><span id="gcn-pose-status" class="artifact-tag">等待处理</span></div><div class="video-frame pose"><video id="gcn-pose-video" controls loop playsinline></video><div id="gcn-pose-placeholder" class="video-placeholder">完成本机骨架提取后显示匿名骨架视频。</div></div></article>
+              <article class="panel evidence-panel compact-student-panel"><div class="panel-head"><div><span class="panel-kicker">STUDENT EVIDENCE · LOCAL</span><h3>本机 GCN 六分类概率</h3></div><span class="model-chip">M1KD · INT8</span></div><div id="gcn-prediction-list" class="prediction-list empty-state">尚未运行 GCN 推理</div></article>
+            </div>
+            <article class="panel teacher-panel"><div class="panel-head"><div><span class="panel-kicker">SEMANTIC TEACHER · CONDITIONAL</span><h3>服务器 Qwen 语义分析</h3></div><span id="gcn-job-state" class="status-pill disabled">未开始</span></div><div id="gcn-teacher-result" class="teacher-placeholder">Qwen 仅在低置信、低骨架质量或不稳定预测时，由服务器自动执行。</div></article>
+          </div>
+          <aside class="panel label-panel decision-panel gcn-status-panel">
+            <div class="decision-section-title">实时处理状态</div>
+            <div class="gcn-progress"><span id="gcn-progress-bar"></span></div>
+            <ol id="gcn-stages" class="gcn-stages"><li data-stage="upload">上传视频</li><li data-stage="pose">本机骨架</li><li data-stage="student">本机 GCN</li><li data-stage="teacher">按需 Qwen</li><li data-stage="done">完成</li></ol>
+            <p id="gcn-job-message" class="muted">选择视频后开始。</p>
+            <div class="decision-section-title special-title">执行边界</div>
+            <div class="gcn-boundary"><span>本机</span><p>视频上传、RTMDet/RTMPose、ProtoGCN</p><span>服务器</span><p>仅门控触发时接收骨架产物并调用 Qwen</p></div>
+          </aside>
+        </div>
+      </section>
+
       <section class="page" id="page-hard">
         <div class="toolbar panel compact">
           <div class="sample-browser"><label>选择待人工审核难例</label><select id="hard-sample-select"><option value="">正在计算难例队列…</option></select></div>
@@ -148,6 +174,13 @@
       <section class="page" id="page-training">
         <div class="page-intro"><div><h2>增量训练</h2></div></div>
         <div id="training-status" class="training-status"></div>
+        <article class="panel settings-panel macro-settings-panel">
+          <div class="panel-head"><div><span class="panel-kicker">MACRO PARAMETERS</span><h3>增量训练参数</h3><p>人工确认难例达到阈值数量后自动冻结一批并触发增量训练；修改后保存即生效。</p></div></div>
+          <div id="incremental-macro-grid" class="macro-grid"></div>
+          <div class="gpu-settings-foot">
+            <div class="macro-actions"><button id="reset-incremental-macro-parameters" class="button ghost">恢复默认值</button><button id="apply-incremental-macro-parameters" class="button primary">应用宏参数</button></div>
+          </div>
+        </article>
       </section>
 
       <section class="page" id="page-settings">
@@ -161,6 +194,21 @@
             <label class="setting-item full"><span>云端项目根目录</span><input id="qwen-remote-root" placeholder="/workspace/code/DAHUA"></label>
           </div>
           <div class="gpu-settings-foot"><p class="muted">任务仅传输骨架特征、骨架视频和学生结果；云端临时文件位于项目根目录的 <code>.runtime/qwen-remote/</code>。</p><div class="gpu-actions"><button id="test-qwen-remote" class="button secondary">测试连接</button><button id="provision-qwen-remote" class="button secondary">初始化云端环境</button><button id="save-qwen-remote" class="button primary">保存云端设置</button></div></div>
+        </article>
+        <article class="panel settings-panel qwen-api-settings">
+          <div class="panel-head"><div><span class="panel-kicker">HOSTED FALLBACK</span><h3>Qwen API 备用教师</h3><p>仅当云端/本机 Qwen 教师无法连接或执行失败时启用。仅上传骨架视频帧和结构化提示词，不上传原始 RGB 视频。密钥可在本页写入服务所在机器的受限文件；接口不会回传密钥。</p></div><span id="qwen-api-status" class="status-pill disabled">未配置</span></div>
+          <div class="settings-grid">
+            <label class="setting-item"><span>启用 API 备用通道</span><input id="qwen-api-enabled" type="checkbox"></label>
+            <label class="setting-item"><span>模型</span><input id="qwen-api-model" placeholder="qwen3-vl-flash"></label>
+            <label class="setting-item full"><span>OpenAI 兼容 Endpoint（HTTPS）</span><input id="qwen-api-endpoint" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"></label>
+            <label class="setting-item"><span>API Key 环境变量名</span><input id="qwen-api-key-env" placeholder="DASHSCOPE_API_KEY"></label>
+            <label class="setting-item"><span>API Key（仅写入）</span><input id="qwen-api-key" type="password" autocomplete="new-password" placeholder="留空则保留已保存密钥"></label>
+            <div class="setting-item"><span>密钥操作</span><label class="teacher-auto-control"><input id="qwen-api-clear-key" type="checkbox"> 清除已保存的 Web 密钥</label></div>
+            <label class="setting-item"><span>超时（秒）</span><input id="qwen-api-timeout" type="number" min="10" max="900" value="180"></label>
+            <label class="setting-item"><span>最大重试次数</span><input id="qwen-api-attempts" type="number" min="1" max="5" value="2"></label>
+            <label class="setting-item"><span>骨架帧数</span><input id="qwen-api-frames" type="number" min="2" max="12" value="8"></label>
+          </div>
+          <div class="gpu-settings-foot"><p id="qwen-api-hint" class="muted">请先在启动服务的终端设置 <code>DASHSCOPE_API_KEY</code>。</p><div class="gpu-actions"><button id="save-qwen-api" class="button primary">保存 API 备用设置</button></div></div>
         </article>
         <article class="panel settings-panel macro-settings-panel">
           <div id="macro-grid" class="macro-grid"></div>
@@ -183,6 +231,6 @@
     </main>
   </div>
   <div id="toast-root"></div>
-  <script src="/app.js?v=20260831-independent-teacher-hard-review" defer></script>
+  <script src="/app.js?v=20260903-incremental-macro-panel" defer></script>
 </body>
 </html>

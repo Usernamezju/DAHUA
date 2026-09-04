@@ -6,11 +6,12 @@ import json
 import mimetypes
 import os
 import subprocess
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
@@ -60,6 +61,59 @@ class QwenRemoteRequest(BaseModel):
     port: int = 22
     user: str = ""
     project_root: str = ""
+
+
+class QwenApiRequest(BaseModel):
+    """Non-secret settings for the hosted Qwen fallback.
+
+    ``api_key`` is write-only.  The backend never returns it and stores it in
+    a separate owner-restricted server-local file rather than JSON settings.
+    """
+
+    enabled: bool = False
+    endpoint: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    model: str = "qwen3-vl-flash"
+    api_key_env: str = "DASHSCOPE_API_KEY"
+    timeout_seconds: int = Field(default=180, ge=10, le=900)
+    max_attempts: int = Field(default=2, ge=1, le=5)
+    max_frames: int = Field(default=8, ge=2, le=12)
+    api_key: str = Field(default="", max_length=2048)
+    clear_api_key: bool = False
+
+
+class PoseBackendRequest(BaseModel):
+    backend_id: str = Field(min_length=1, max_length=80)
+
+
+UPLOAD_SUFFIXES = frozenset({".mp4", ".avi", ".mov", ".mkv", ".webm", ".mpeg", ".mpg"})
+UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+async def _save_uploaded_video(upload: UploadFile, destination: Path) -> int:
+    """Persist an upload with a strict size limit and no client path trust."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    limit = int(os.environ.get("DAHUA_WEB_MAX_UPLOAD_MB", "1024")) * 1024 * 1024
+    size = 0
+    temporary = destination.with_suffix(destination.suffix + ".uploading")
+    try:
+        with temporary.open("wb") as output:
+            while True:
+                chunk = await upload.read(UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > limit:
+                    raise ValueError("上传视频超过 {} MiB 限制".format(limit // 1024 // 1024))
+                output.write(chunk)
+        if size == 0:
+            raise ValueError("上传文件为空")
+        temporary.replace(destination)
+        return size
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    finally:
+        await upload.close()
 
 
 def _not_found(kind: str, identifier: str) -> HTTPException:
@@ -267,6 +321,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     current.training_baseline_checkpoint() or ""
                 ),
             },
+            "pose_backend": current.pose_backend_status(),
             "rtmpose_joint_score_threshold": current.joint_score_threshold,
             "manifest_import": request.app.state.manifest_import,
             "baseline_import": request.app.state.baseline_import,
@@ -294,9 +349,78 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     def model_status(request: Request):
         return request.app.state.jobs.model_status()
 
+    @app.get("/api/pose-backend")
+    def pose_backend(request: Request):
+        return request.app.state.settings.pose_backend_status()
+
+    @app.put("/api/pose-backend")
+    def update_pose_backend(value: PoseBackendRequest, request: Request):
+        try:
+            return request.app.state.settings.update_pose_backend(value.backend_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @app.get("/api/training/status")
     def incremental_training_status(request: Request):
         return request.app.state.jobs.incremental_training_status()
+
+    @app.post("/api/gcn/upload")
+    async def upload_gcn_video(
+        request: Request,
+        video: UploadFile = File(...),
+    ):
+        """Upload a local RGB video and immediately start the local pipeline.
+
+        The browser sends RGB only to this local Web service.  The service
+        stores it below ``runtime/videos``, runs RTMDet/RTMPose and ProtoGCN
+        locally, and the existing uncertainty gate alone may later send the
+        derived skeleton artefacts to the configured remote Qwen teacher.
+        """
+        original_name = Path(video.filename or "video.mp4").name
+        suffix = Path(original_name).suffix.lower()
+        if suffix not in UPLOAD_SUFFIXES:
+            raise HTTPException(
+                status_code=422,
+                detail="仅支持 MP4、AVI、MOV、MKV、WebM、MPEG 视频",
+            )
+        capability = request.app.state.jobs.local_inference_capability()
+        required = ("pose_extraction", "campus6_inference")
+        unavailable = [capability[name]["reason"] for name in required if not capability[name]["enabled"]]
+        if unavailable:
+            raise HTTPException(status_code=409, detail="；".join(unavailable))
+        sample_id = "local_{}_{}".format(
+            uuid.uuid4().hex[:12], uuid.uuid4().hex[:8]
+        )
+        destination = request.app.state.settings.runtime_root / "videos" / (sample_id + suffix)
+        sample = None
+        job = None
+        try:
+            size = await _save_uploaded_video(video, destination)
+            sample = request.app.state.store.add_sample(
+                sample_id,
+                destination,
+                source_dataset="local_upload",
+                source_label=original_name,
+            )
+            job = request.app.state.jobs.submit(sample_id, "full")
+        except ValueError as exc:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception:
+            if sample is not None and job is None:
+                request.app.state.store.discard_unstarted_local_upload(sample_id)
+            destination.unlink(missing_ok=True)
+            raise
+        return {
+            "sample": _sample_payload(request.app, sample),
+            "job": job,
+            "upload": {
+                "original_name": original_name,
+                "size_bytes": size,
+                "execution": "local_rtmpose_and_protogcn",
+                "teacher": "remote_qwen_only_if_gate_triggers",
+            },
+        }
 
     @app.put("/api/gpus")
     def update_gpu_state(value: GPUSettingsRequest, request: Request):
@@ -323,6 +447,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    @app.get("/api/qwen-api")
+    def qwen_api(request: Request):
+        return request.app.state.settings.qwen_api_status()
+
+    @app.put("/api/qwen-api")
+    def update_qwen_api(value: QwenApiRequest, request: Request):
+        try:
+            return request.app.state.settings.update_qwen_api(value.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @app.post("/api/qwen-remote/test")
     def test_qwen_remote(request: Request):
         try:
@@ -334,8 +469,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     @app.post("/api/qwen-remote/provision")
     def provision_qwen_remote(request: Request):
         try:
-            request.app.state.jobs.provision_qwen_remote()
-            return {"ok": True}
+            summary = request.app.state.jobs.provision_qwen_remote()
+            if summary.get("training_env") == "already_present":
+                message = "云端代码与 Qwen 虚拟环境已初始化（训练环境已存在，跳过）"
+            elif summary.get("training_env") == "created":
+                message = "云端代码与 Qwen 虚拟环境已初始化（训练环境已自动创建）"
+            else:
+                message = "云端代码与 Qwen 虚拟环境已初始化"
+            return {"ok": True, "message": message, **summary}
         except (ValueError, OSError, subprocess.SubprocessError) as exc:
             raise HTTPException(status_code=422, detail="Qwen 云端初始化失败：{}".format(str(exc)[:240])) from exc
 
@@ -356,6 +497,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         baseline: Optional[Campus6Baseline] = request.app.state.baseline
         if baseline is not None:
             baseline.review_temperature = current.review_temperature
+        # The incremental dataset holds a live copy of the batch threshold;
+        # keep it aligned so readiness checks use the new value immediately.
+        jobs: Optional[JobManager] = request.app.state.jobs
+        if jobs is not None and "incremental_batch_size" in cleaned:
+            jobs.incremental.batch_size = cleaned["incremental_batch_size"]
         return snapshot(current)
 
     @app.get("/api/dashboard")
@@ -448,7 +594,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             raise _not_found("sample", sample_id) from None
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return _sample_payload(request.app, sample)
+        payload = _sample_payload(request.app, sample)
+        if sample.get("incremental_pool"):
+            payload["incremental_enrollment"] = (
+                request.app.state.jobs.enroll_reviewed_hard_sample(sample_id)
+            )
+        return payload
 
     @app.post("/api/samples/{sample_id}/undo")
     def undo_review(sample_id: str, value: UndoRequest, request: Request):

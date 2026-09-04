@@ -24,7 +24,7 @@ from dahua_cup.pipeline.rtmpose17_student_worker import (
 )
 
 PROTOGCN_DEPLOY_CONFIG = (
-    "third_party/ProtoGCN/configs/campus6/rtmpose26_k400_2d_gap_full.py"
+    "third_party/ProtoGCN/configs/campus6/rtm_s_coco17_k400_2d_gap_full.py"
 )
 STUDENT_CHECKPOINT = "models/student/M1KD.int8.pt"
 

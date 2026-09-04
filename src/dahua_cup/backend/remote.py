@@ -21,8 +21,15 @@ DEFAULT_QWEN_REMOTE = {
     "project_root": "",
 }
 
+# Server-side GCN training environment.  Mirrors the default in
+# Settings.incremental_remote_python; the environment variable is the single
+# source of truth for which remote Python incremental training must use.
+DEFAULT_REMOTE_TRAINING_PYTHON = "/root/miniconda3/envs/skel_gcn38/bin/python"
+MMCV_WHEEL_INDEX = "https://download.openmmlab.com/mmcv/dist/cu113/torch1.10.0/index.html"
+
 _HOST = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,252}$")
 _USER = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
+_CONDA_ENV_PYTHON = re.compile(r"^(.+)/envs/([A-Za-z0-9_.-]+)/bin/python[0-9.]*$")
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -78,6 +85,27 @@ def _target(config: dict[str, Any]) -> str:
     return "{}@{}".format(config["user"], config["host"])
 
 
+def training_python_path() -> str:
+    """Return the remote Python used for server-side GCN training."""
+    return os.environ.get(
+        "DAHUA_INCREMENTAL_REMOTE_PYTHON", DEFAULT_REMOTE_TRAINING_PYTHON
+    ).strip()
+
+
+def conda_layout(python_path: str) -> Optional[tuple[str, str]]:
+    """Split ``<conda-root>/envs/<name>/bin/python`` into (conda root, name).
+
+    Returns ``None`` when the path cannot host an auto-created Conda env.
+    """
+    value = python_path.rstrip("/")
+    if not value.startswith("/"):
+        return None
+    match = _CONDA_ENV_PYTHON.fullmatch(value)
+    if not match:
+        return None
+    return match.group(1), match.group(2)
+
+
 def test_connection(config: dict[str, Any]) -> None:
     if not config["enabled"]:
         raise ValueError("请先启用 Qwen 云端连接")
@@ -87,8 +115,8 @@ def test_connection(config: dict[str, Any]) -> None:
     )
 
 
-def provision_remote(config: dict[str, Any]) -> None:
-    """Create/update the remote checkout and its project-local Qwen venv."""
+def provision_remote(config: dict[str, Any]) -> dict[str, str]:
+    """Create/update the remote checkout, its Qwen venv and GCN training env."""
     if not config["enabled"]:
         raise ValueError("请先启用 Qwen 云端连接")
     root = config["project_root"].rstrip("/")
@@ -118,6 +146,64 @@ fi
         check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, timeout=1800,
     )
+    return {"qwen_env": "ready", "training_env": _provision_training_env(config)}
+
+
+def _provision_training_env(config: dict[str, Any]) -> str:
+    """Ensure the remote GCN Conda environment used by incremental training.
+
+    The Python path is deployment state shared with
+    ``Settings.incremental_remote_python``; an existing interpreter is left
+    untouched (the competition server already ships ``skel_gcn38``).  A
+    missing environment is recreated from ``requirements/skel.txt``: Python
+    3.8 with the PyTorch 1.10.2 / CUDA 11.3 Conda build, then the pinned pip
+    set including the prebuilt mmcv-full 1.5.0 wheel.
+    """
+    python = training_python_path()
+    if not python:
+        raise ValueError("DAHUA_INCREMENTAL_REMOTE_PYTHON 不能为空")
+    ssh = ["ssh", "-o", "BatchMode=yes", "-p", str(config["port"]), _target(config)]
+    probe = subprocess.run(
+        ssh + ["test -x " + shlex.quote(python)],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60,
+    )
+    if probe.returncode == 0:
+        return "already_present"
+    if probe.returncode != 1:
+        raise RuntimeError(
+            "检查云端训练环境失败：{}".format((probe.stdout or "").strip()[:300])
+        )
+    layout = conda_layout(python)
+    if layout is None:
+        raise ValueError(
+            "云端训练 Python 不存在，且路径不符合 Conda 环境布局"
+            "（<conda 根>/envs/<环境名>/bin/python），无法自动创建：{}".format(python)
+        )
+    conda_root, env_name = layout
+    conda_bin = conda_root + "/bin/conda"
+    skel = config["project_root"].rstrip("/") + "/requirements/skel.txt"
+    script = """set -eu
+conda_bin="$(command -v conda || true)"
+test -n "$conda_bin" || conda_bin={conda}
+test -x "$conda_bin" || {{ echo 'Conda is unavailable on the remote host' >&2; exit 2; }}
+test -f {skel} || {{ echo 'requirements/skel.txt is missing; push it and re-run' >&2; exit 2; }}
+"$conda_bin" create -n {env} python=3.8 -y
+"$conda_bin" install -n {env} -y -c pytorch pytorch=1.10.2 torchvision=0.11.3 torchaudio=0.10.2 cudatoolkit=11.3
+{py} -m pip install --upgrade pip
+{py} -m pip install -r {skel} -f {mmcv_index}
+""".format(
+        conda=shlex.quote(conda_bin),
+        skel=shlex.quote(skel),
+        env=shlex.quote(env_name),
+        py=shlex.quote(python),
+        mmcv_index=shlex.quote(MMCV_WHEEL_INDEX),
+    )
+    subprocess.run(
+        ssh + ["sh -lc " + shlex.quote(script)],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, timeout=3600,
+    )
+    return "created"
 
 
 def run_remote_qwen(
@@ -176,3 +262,94 @@ def run_remote_qwen(
             remote("rm -rf " + shlex.quote(remote_dir), timeout=30)
         except (OSError, subprocess.SubprocessError):
             pass
+
+
+def run_remote_incremental_training(
+    config: dict[str, Any],
+    *,
+    round_id: str,
+    annotation: Path,
+    remote_python: str,
+    init_checkpoint: str,
+    epochs: int,
+    gpu_id: str = "auto",
+) -> dict[str, str]:
+    """Upload a frozen annotation and run Campus6 fine-tuning remotely.
+
+    The pickle contains the COCO-17 arrays, so raw videos never leave the
+    workstation.  Output remains on the server for checkpoint provenance; the
+    Upload acknowledgement is not a successful training result: callers must
+    retain their staging transaction until this function returns successfully.
+    """
+    if not config.get("enabled"):
+        raise ValueError("增量训练服务器未配置；请先启用 Qwen SSH 连接")
+    annotation = Path(annotation)
+    if not annotation.is_file():
+        raise FileNotFoundError("incremental training annotation is missing")
+    if not remote_python.startswith("/") or not init_checkpoint.startswith("/"):
+        raise ValueError("远程 Python 与初始化权重必须使用绝对路径")
+    if epochs < 1:
+        raise ValueError("incremental training epochs must be positive")
+    if gpu_id != "auto" and not gpu_id.isdigit():
+        raise ValueError("DAHUA_INCREMENTAL_REMOTE_GPU_ID must be auto or a GPU index")
+
+    safe_round = re.sub(r"[^A-Za-z0-9_.-]+", "_", round_id).strip("._")
+    if not safe_round:
+        raise ValueError("invalid incremental round id")
+    root = str(config["project_root"]).rstrip("/")
+    relative = ".runtime/incremental/{}-{}".format(safe_round, uuid.uuid4().hex)
+    remote_dir = root + "/" + relative
+    target = _target(config)
+    ssh = ["ssh", "-o", "BatchMode=yes", "-p", str(config["port"]), target]
+    scp = ["scp", "-o", "BatchMode=yes", "-P", str(config["port"])]
+
+    def invoke(command: list[str], timeout: int) -> str:
+        completed = subprocess.run(
+            command, check=True, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, timeout=timeout,
+        )
+        return completed.stdout or ""
+
+    invoke(ssh + ["mkdir -p " + shlex.quote(remote_dir)], timeout=30)
+    invoke(
+        scp + [
+            str(annotation),
+            target + ":" + remote_dir + "/training_annotations_with_all.pkl",
+        ],
+        timeout=300,
+    )
+    upload = {
+        "remote_dir": remote_dir,
+        "remote_annotation": remote_dir + "/training_annotations_with_all.pkl",
+    }
+    if gpu_id == "auto":
+        gpu_script = (
+            "nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.gpu "
+            "--format=csv,noheader,nounits | awk -F, '$2-$3 >= 20000 && $4 <= 10 "
+            "{gsub(/ /, \"\", $1); print $1; exit}'"
+        )
+    else:
+        gpu_script = "printf '%s\\n' " + shlex.quote(gpu_id)
+    command = """set -eu
+gpu_id=$({gpu_script})
+test -n \"$gpu_id\" || {{ echo 'No idle GPU available for incremental training' >&2; exit 75; }}
+test -x {python} || {{ echo 'Remote GCN Python is unavailable' >&2; exit 2; }}
+test -f {checkpoint} || {{ echo 'Remote FP32 initialization checkpoint is unavailable' >&2; exit 2; }}
+cd {root}
+CUDA_VISIBLE_DEVICES=\"$gpu_id\" PYTHONPATH=src${{PYTHONPATH:+:$PYTHONPATH}} {python} -m dahua_cup.pipeline.train_campus6 \\
+  --ann-file {annotation} --work-dir {work_dir} --init-checkpoint {checkpoint} \\
+  --epochs {epochs} --gpus 1 --distill --lora
+""".format(
+        gpu_script=gpu_script,
+        python=shlex.quote(remote_python),
+        checkpoint=shlex.quote(init_checkpoint),
+        root=shlex.quote(root),
+        annotation=shlex.quote(relative + "/training_annotations_with_all.pkl"),
+        work_dir=shlex.quote(relative + "/work_dir"),
+        epochs=int(epochs),
+    )
+    output = invoke(ssh + ["sh -lc " + shlex.quote(command)], timeout=24 * 3600)
+    return {
+        **upload,
+        "log_tail": output[-4000:],
+    }

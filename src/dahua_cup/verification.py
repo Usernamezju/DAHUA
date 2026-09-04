@@ -42,7 +42,7 @@ def command_check(name: str, command: list[str]) -> Check:
 def code_checks() -> list[Check]:
     checks = [
         path_check("campus6_labels", CONFIG_ROOT / "campus/campus6_labels.txt"),
-        path_check("protogcn_campus6_config", PROTOGCN_ROOT / "configs/campus6/rtmpose26_k400_2d_gap_full.py"),
+        path_check("protogcn_campus6_config", PROTOGCN_ROOT / "configs/campus6/rtm_s_coco17_k400_2d_gap_full.py"),
         Check("pytest_available", "pass" if importlib.util.find_spec("pytest") else "skip", "pytest optional dependency"),
     ]
     if checks[-1].status == "pass":

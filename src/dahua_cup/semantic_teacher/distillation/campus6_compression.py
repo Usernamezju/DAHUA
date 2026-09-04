@@ -78,6 +78,13 @@ def _import_protogcn(root: Path) -> None:
     import sys
 
     path = str(root / "gcn_models" / "ProtoGCN")
+    if not Path(path).is_dir():
+        # Source-layout checkouts keep ProtoGCN in ``third_party`` while the
+        # server's flat checkout uses ``gcn_models``.  Supporting both keeps
+        # the Deep Compression runner reproducible in either deployment.
+        from dahua_cup.paths import PROTOGCN_ROOT
+
+        path = str(PROTOGCN_ROOT)
     if path not in sys.path:
         sys.path.insert(0, path)
     # Register the Campus6 GAP recognizer before building the configured model.

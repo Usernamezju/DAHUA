@@ -1,0 +1,12 @@
+# Base development, Web runtime, and optional TensorRT pose deployment support.
+-e .[runtime,web,pose-int8]
+
+# The validated Campus6 FP16 engine runtime has its own ABI-specific lock:
+#   python -m pip install -r requirements/pose_fp16.txt
+# Install it in the Python environment used by DAHUA_RTMPOSE_PYTHON.  Do not
+# mix it into the ProtoGCN/skel_gcn38 environment, which intentionally keeps
+# its legacy MMCV 1.5.0 stack.
+
+# TensorRT itself must match the target CUDA/Python ABI.  The reference server
+# uses TensorRT 8.6.1 with CUDA 11.3; install the matching NVIDIA distribution
+# before starting the FP16 worker.

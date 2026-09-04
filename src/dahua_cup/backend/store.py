@@ -353,6 +353,31 @@ class ReviewStore:
             )
         return self.get_sample(sample_id)
 
+    def discard_unstarted_local_upload(self, sample_id: str) -> bool:
+        """Remove an upload only when no inference job was ever created.
+
+        This is intentionally narrower than a general delete API: it is used
+        solely to roll back an upload that fails preflight/queue admission and
+        cannot erase an auditable review or an already-started task.
+        """
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT source_dataset FROM samples WHERE sample_id = ?", (sample_id,)
+            ).fetchone()
+            if row is None or row["source_dataset"] != "local_upload":
+                return False
+            jobs = connection.execute(
+                "SELECT 1 FROM jobs WHERE sample_id = ? LIMIT 1", (sample_id,)
+            ).fetchone()
+            reviews = connection.execute(
+                "SELECT 1 FROM reviews WHERE sample_id = ? LIMIT 1", (sample_id,)
+            ).fetchone()
+            if jobs is not None or reviews is not None:
+                return False
+            connection.execute("DELETE FROM events WHERE sample_id = ?", (sample_id,))
+            connection.execute("DELETE FROM samples WHERE sample_id = ?", (sample_id,))
+            return True
+
     def enqueue_pseudo_record(
         self,
         record: dict,

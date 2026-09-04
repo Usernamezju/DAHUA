@@ -1,0 +1,69 @@
+{
+  "schema_version": "campus6_pose_engine_validation.v1",
+  "status": "passed",
+  "generated_at": "2026-09-04T15:40:52.372445+00:00",
+  "source_dataset": {
+    "annotation": "/workspace/data/xzz_data/DAHUA/experiments/acceptance/campus6/deep_compression_20260903/main_85pct_8bit/annotations_with_all.pkl",
+    "sample_count": 358,
+    "selected_videos": 10,
+    "selection_list": "/workspace/code/DAHUA/.runtime/pose_fp16_quality/videos_358_10.jsonl",
+    "selection_method": "stratified round-robin from the 358-sample annotation set"
+  },
+  "detector": {
+    "status": "passed",
+    "model": "RTMDet-nano-person",
+    "precision": "FP16",
+    "backend": "TensorRT via MMDeploy",
+    "engine": "/workspace/code/DAHUA/models/pose/fp16/rtmdet_nano_person/end2end.engine",
+    "bytes": 6748196,
+    "sha256": "c99df29de40ffc235931aea85634d8b35fedccab6a875a1b5cd9f70cce9dab84"
+  },
+  "pose": {
+    "status": "passed",
+    "model": "RTMPose-S COCO-17",
+    "precision": "FP16",
+    "backend": "TensorRT via MMDeploy",
+    "engine": "/workspace/code/DAHUA/models/pose/fp16/rtmpose_s/end2end.engine",
+    "bytes": 17589332,
+    "sha256": "a7c29c23340dc8c10e8dc01c89e3694b4a21d2ffae231d0c7792c4f0bff12957"
+  },
+  "postprocess": {
+    "bbox_score_threshold": 0.15,
+    "nms_iou_threshold": 0.5,
+    "note": "MMDeploy output receives the same score-filtered greedy NMS as MMPose before pose inference."
+  },
+  "quality": {
+    "videos": 10,
+    "frames_compared": 300,
+    "fp32_people": 1070,
+    "fp16_people": 1202,
+    "matched_person_pairs": 695,
+    "detection_recall_vs_fp32": 0.6495327102803738,
+    "detection_precision_vs_fp32": 0.5782029950083195,
+    "bbox_iou_mean": 0.8047970972320144,
+    "keypoint_error_normalized_median": 0.010873672311785534,
+    "fp32_mean_inference_s": 0.18764627346323928,
+    "fp16_mean_inference_s": 0.038666073063165336,
+    "speedup_fp16_vs_fp32": 4.852995367714176,
+    "gate": {
+      "accepted": true,
+      "criteria": {
+        "bbox_iou_mean_min": 0.8,
+        "keypoint_error_normalized_median_max": 0.025
+      }
+    },
+    "report": "/workspace/code/DAHUA/.runtime/pose_fp16_quality/358_nmsmatched/aggregate.json",
+    "campus6_classification": {
+      "videos": 10,
+      "correct": 9,
+      "accuracy": 0.9,
+      "checkpoint_format": "quantized",
+      "report": "/workspace/code/DAHUA/.runtime/pose_fp16_quality/358_full/classification/aggregate.json",
+      "note": "10 stratified videos from the 358-sample annotation set; full available sequence up to 100 frames."
+    }
+  },
+  "runtime_files_bytes_without_validation": 24349849,
+  "runtime_files_mib_without_validation": 23.22182559967041,
+  "runtime_package_bytes_including_validation": 24352616,
+  "runtime_package_mib_including_validation": 23.224464416503906
+}

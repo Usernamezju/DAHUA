@@ -1,0 +1,30 @@
+% Source: Notion page “12. 预训练与微调数据集”. Generated without rewriting its content.
+\chapter{预训练与微调数据集}
+
+数据集构建与划分。 模型首先在 Kinetics-400 上进行预训练。Kinetics-400 是大规模人体动作识别数据集，包含400类动作，每类至少400段、时长约10秒的视频，原始视频主要采集自 YouTube，覆盖人与物体交互、人与人交互等多种真实场景。项目采用其二维骨架数据训练 ProtoGCN，并以 Kinetics-400 预训练的骨干网络参数作为六分类任务的初始化。
+
+针对校园场景，我们进一步构建了 Campus6 六分类微调数据集。数据主要整合自 KTH、Kinetics、BEHAVE、CMU Tagging 等公开行为数据集，并补充从 YouTube 等公开视频平台筛选、裁剪和人工整理的相关行为片段。不同来源的视频统一经过姿态估计与骨架格式转换，形成 COCO-17 双人骨架序列，并重新标注为六类：正常行走、正常奔跑、嬉戏追逐、嬉戏推搡、冲突追逐、冲突推搡。最终基线共包含 358条样本，按源视频分组划分为 训练集252条、验证集53条、测试集53条，避免同源片段跨集合造成数据泄漏。数据集划分如下表：
+
+\begin{center}
+\small
+\begin{longtable}{|>{\raggedright\arraybackslash}p{0.18\linewidth}|>{\raggedright\arraybackslash}p{0.18\linewidth}|>{\raggedright\arraybackslash}p{0.18\linewidth}|>{\raggedright\arraybackslash}p{0.18\linewidth}|>{\raggedright\arraybackslash}p{0.18\linewidth}|}
+\hline
+类别 & 总计 & 训练集 & 验证集 & 测试集 \\
+\hline
+normal\_walk & 62 & 44 & 9 & 9 \\
+\hline
+normal\_run & 72 & 50 & 11 & 11 \\
+\hline
+playful\_chase & 81 & 57 & 12 & 12 \\
+\hline
+playful\_push & 75 & 53 & 11 & 11 \\
+\hline
+conflict\_chase & 16 & 12 & 2 & 2 \\
+\hline
+conflict\_push & 52 & 36 & 8 & 8 \\
+\hline
+合计 & 358 & 252 & 53 & 53 \\
+\hline
+\end{longtable}
+\end{center}
+

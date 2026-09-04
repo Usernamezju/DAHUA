@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -97,6 +98,7 @@ def summarize_pose_feature(sample_id: str, path: str | Path) -> dict:
 
 
 def main(argv=None) -> None:
+    total_started = time.perf_counter()
     args = build_parser().parse_args(argv)
     if args.max_frames < 2 or args.max_new_tokens <= 0:
         raise ValueError(
@@ -104,7 +106,7 @@ def main(argv=None) -> None:
         )
     pose_video = require_file(args.pose_video, "rendered pose video")
     labels = load_labels(args.label_map)
-    student_task, _ = load_student_hint(
+    student_task, student_distribution = load_student_hint(
         args.student_json, labels
     )
     task = args.task.strip() or student_task or f"closed_set_{len(labels)}"
@@ -113,6 +115,7 @@ def main(argv=None) -> None:
     if not model_dir.is_dir():
         raise FileNotFoundError(f"Qwen3-VL model directory not found: {model_dir}")
 
+    model_load_started = time.perf_counter()
     teacher = Qwen3Teacher(
         Qwen3Config(
             model_dir=str(model_dir),
@@ -126,13 +129,18 @@ def main(argv=None) -> None:
             retries=args.retries,
         )
     )
+    model_load_seconds = time.perf_counter() - model_load_started
+    inference_started = time.perf_counter()
     result, provenance = teacher.predict(
         sample_id=args.sample_id,
         semantic_graph=semantic_graph,
         video_path=pose_video,
         allowed_labels=labels,
         task=task,
+        student_distribution=student_distribution,
     )
+    inference_seconds = time.perf_counter() - inference_started
+    total_seconds = time.perf_counter() - total_started
     output = {
         "schema_version": "teacher_prediction.v1",
         "status": "completed",
@@ -141,6 +149,11 @@ def main(argv=None) -> None:
         "model": provenance["teacher_model_version"],
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "result": result.to_dict(),
+        "timing": {
+            "model_load_seconds": round(model_load_seconds, 4),
+            "inference_seconds": round(inference_seconds, 4),
+            "total_seconds": round(total_seconds, 4),
+        },
         "provenance": {
             **provenance,
             "model_dir": str(model_dir),
@@ -153,6 +166,7 @@ def main(argv=None) -> None:
             "pose_feature": str(Path(args.feature).resolve()),
             "max_frames": args.max_frames,
             "max_new_tokens": args.max_new_tokens,
+            "student_distribution": student_distribution,
         },
         "semantic_graph": semantic_graph,
     }
@@ -171,6 +185,9 @@ def main(argv=None) -> None:
         label=result.label,
         label_space_size=len(labels),
         output=str(destination),
+        model_load_seconds=round(model_load_seconds, 4),
+        inference_seconds=round(inference_seconds, 4),
+        total_seconds=round(total_seconds, 4),
     )
 
 

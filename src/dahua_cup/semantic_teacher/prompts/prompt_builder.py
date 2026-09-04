@@ -16,16 +16,31 @@ def build_teacher_prompt(
     semantic_graph: Mapping[str, Any],
     allowed_labels: tuple[str, ...] = LABELS,
     task: str = "campus6",
+    student_distribution: Mapping[str, float] | None = None,
 ) -> str:
     if not sample_id:
         raise ValueError("sample_id is required")
     labels = tuple(str(label) for label in allowed_labels)
     if not labels or len(set(labels)) != len(labels):
         raise ValueError("allowed_labels must be non-empty and unique")
+    student_hint: dict[str, float] = {}
+    for label, probability in (student_distribution or {}).items():
+        label = str(label)
+        if label not in labels:
+            continue
+        try:
+            value = float(probability)
+        except (TypeError, ValueError):
+            continue
+        if value >= 0 and value == value:
+            student_hint[label] = value
     payload = {
         "sample_id": sample_id,
         "task": task,
         "semantic_graph": semantic_graph,
+        # This is deliberately the student's reported Top-K, not a synthetic
+        # re-normalization over labels it did not report.
+        "student_distribution": student_hint,
     }
     return f"""You are a weak-supervision teacher for closed-set video behavior analysis.
 Prompt version: {PROMPT_VERSION}
@@ -34,7 +49,7 @@ Allowed labels ({len(labels)}): {json.dumps(labels, ensure_ascii=False)}
 
 Rules:
 - Use only facts present in INPUT. Do not invent intent, impact force, fear, attacks, defense, or contact.
-- Judge independently from the skeleton video and measured INPUT only. You receive no student-model label or probability and must not assume one.
+- INPUT.student_distribution is the student's Top-K probability hint. It is not ground truth: use it to identify close alternatives, but correct it whenever the skeleton video or measured evidence disagrees.
 - If INPUT.semantic_graph.persons contains two or more people, this is an interaction clip: choose only one of playful_chase, playful_push, conflict_chase, or conflict_push. In that case normal_walk and normal_run must be omitted from distribution (equivalent to probability 0), even if one person moves slowly or appears stationary.
 - evidence must contain at least one item, and every item must cite an existing segment_id.
 - If no positive behavior cue is available, cite a measured INPUT fact (for example low motion, missing relation, or insufficient coverage) as the evidence and set needs_review=true.

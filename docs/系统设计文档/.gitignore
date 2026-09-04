@@ -1,0 +1,9 @@
+# LaTeX build artifacts; sources (.tex/.bib/.sty/figures) and the final PDF are committed.
+*.aux
+*.bbl
+*.blg
+*.log
+*.listing
+*.out
+*.toc
+*.xdv
