@@ -19,9 +19,16 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from dahua_cup.pipeline.common import render_command
+from dahua_cup.pipeline.common import file_hash
 from dahua_cup.semantic_teacher.incremental.campus_dataset import (
     CampusIncrementalDataset,
     IncrementalRound,
+)
+from dahua_cup.semantic_teacher.incremental.model_registry import ModelRegistry
+from dahua_cup.semantic_teacher.incremental.release_gate import (
+    ProductionPointer,
+    ReleaseGates,
+    evaluate_release,
 )
 from dahua_cup.semantic_teacher.prompts.prompt_builder import PROMPT_VERSION
 
@@ -461,11 +468,16 @@ class JobManager:
             reverse=True,
         )
         previous_model_id = pointer.get("previous_model_id")
+        current_record = latest.get(str(pointer.get("current_model_id") or ""), {})
+        production_metrics = current_record.get("metrics") or metrics
+        production_name = current_record.get("name") or (
+            "M1KD QAT INT8 + Logits KD" if not current_record else "Campus6 增量 LoRA 候选"
+        )
         return {
             "schema_version": "campus6_model_status.v1",
             "production": {
                 "model_id": pointer.get("current_model_id") or "m1kd-int8-campus6",
-                "name": "M1KD QAT INT8 + Logits KD",
+                "name": production_name,
                 "status": "production",
                 "generated_at": generated_at,
                 "deployed_at": (
@@ -476,7 +488,8 @@ class JobManager:
                     checkpoint.stat().st_size / 1_000_000
                     if checkpoint and checkpoint.is_file() else None
                 ),
-                "metrics": metrics,
+                "metrics": production_metrics,
+                "release_gate": current_record.get("release_gate"),
             },
             "candidate": candidate_records[0] if candidate_records else None,
             "lifecycle": ["candidate", "validated", "production"],
@@ -547,6 +560,10 @@ class JobManager:
             "incremental_dataset": dataset,
             "estimated_remaining_seconds": remaining if running else None,
             "message": value.get("message") or "",
+            "round_id": value.get("round_id"),
+            "model_id": value.get("model_id"),
+            "release_gate": value.get("release_gate"),
+            "evaluation": value.get("evaluation"),
         }
 
     @property
@@ -616,7 +633,15 @@ class JobManager:
                 ),
             )
             remote = getattr(self.settings, "incremental_remote", lambda: {})()
+            evaluation_annotation = self.incremental.candidate_annotation(round_)
             if remote.get("enabled"):
+                remote_evaluate_command = self.settings.incremental_evaluate_command or (
+                    f"{shlex.quote(self.settings.incremental_remote_python)} -m dahua_cup.pipeline.evaluate_incremental "
+                    "--config {config} --candidate-checkpoint {candidate_checkpoint} "
+                    "--baseline-checkpoint {baseline_checkpoint} --annotation {evaluation_annotation} "
+                    "--old-annotation {old_annotation} --new-annotation {new_annotation} "
+                    "--output {metrics_file} --lora"
+                )
                 remote_result = run_remote_incremental_training(
                     remote,
                     round_id=round_.round_id,
@@ -625,6 +650,13 @@ class JobManager:
                     init_checkpoint=self.settings.incremental_remote_init_checkpoint,
                     epochs=10,
                     gpu_id=self.settings.incremental_remote_gpu_id,
+                    evaluation_command=remote_evaluate_command,
+                    config_path=str(self.settings.repository_root / "third_party/ProtoGCN/configs/campus6/rtm_s_coco17_k400_2d_gap_full.py"),
+                    evaluation_annotation=evaluation_annotation,
+                    old_annotation=self.incremental.all_root / "annotations_with_all.pkl",
+                    new_annotation=round_.incoming_annotation,
+                    baseline_checkpoint=str(self.settings.training_baseline_checkpoint() or ""),
+                    local_output_dir=round_.root,
                 )
                 training_metadata = {"execution": "remote_ssh", **remote_result}
             else:
@@ -647,10 +679,34 @@ class JobManager:
                     "log_tail": log[-4000:],
                 }
             self._write_incremental_status(
-                status="running", stage="merge", progress=0.90,
+                status="running", stage="validate", progress=0.88,
                 started_at=_now(), updated_at=_now(), round_id=round_.round_id,
                 sample_count=len(round_.sample_ids),
-                message="训练已完成，正在合并 campus_all",
+                message="训练已完成，正在评估新旧数据并执行 release gate",
+            )
+            candidate_checkpoint = self._incremental_candidate_checkpoint(
+                round_.root, training_metadata
+            )
+            evaluation = self._evaluate_incremental_candidate(
+                round_, candidate_checkpoint, training_metadata
+            )
+            release = self._promote_incremental_candidate(
+                round_, candidate_checkpoint, evaluation
+            )
+            training_metadata = {
+                **training_metadata,
+                "candidate_checkpoint": str(candidate_checkpoint),
+                "evaluation": evaluation,
+                "release_gate": release["gate_report"],
+                "model_id": release["model_id"],
+            }
+            self._write_incremental_status(
+                status="running", stage="merge", progress=0.95,
+                started_at=_now(), updated_at=_now(), round_id=round_.round_id,
+                sample_count=len(round_.sample_ids),
+                release_gate=release["gate_report"],
+                model_id=release["model_id"],
+                message="验证通过，正在合并 campus_all 并完成生产模型切换",
             )
             merged = self.incremental.complete_round(
                 round_, training_metadata=training_metadata
@@ -658,7 +714,8 @@ class JobManager:
             self._write_incremental_status(
                 status="completed", stage="completed", progress=1.0,
                 started_at=_now(), updated_at=_now(), round_id=round_.round_id,
-                sample_count=len(round_.sample_ids), message="增量训练成功；已合并 campus_all，本批 campus_increment 已清理",
+                sample_count=len(round_.sample_ids), release_gate=release["gate_report"],
+                model_id=release["model_id"], message="增量训练、验证和生产发布均成功；已合并 campus_all，本批 campus_increment 已清理",
                 merge=merged,
             )
         except Exception as exc:
@@ -667,8 +724,117 @@ class JobManager:
             self._write_incremental_status(
                 status="failed", stage="failed", progress=0.0,
                 updated_at=_now(), round_id=round_.round_id if round_ else None,
+                release_gate=getattr(exc, "gate_report", None),
                 message=str(exc)[:1000],
             )
+
+    @staticmethod
+    def _incremental_candidate_checkpoint(root: Path, metadata: dict) -> Path:
+        configured = str(metadata.get("candidate_checkpoint") or "").strip()
+        if configured:
+            path = Path(configured).expanduser().resolve()
+            if path.is_file():
+                return path
+        candidates = sorted(
+            root.rglob("best_top1_acc*.pth"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if not candidates:
+            raise FileNotFoundError("增量训练未生成 best_top1_acc*.pth 候选权重")
+        return candidates[0].resolve()
+
+    def _evaluate_incremental_candidate(
+        self, round_: IncrementalRound, candidate_checkpoint: Path, metadata: dict
+    ) -> dict:
+        metrics_file = round_.root / "candidate_metrics.json"
+        configured = str(metadata.get("metrics_file") or "").strip()
+        if configured and Path(configured).is_file():
+            metrics_file = Path(configured).expanduser().resolve()
+        if not metrics_file.is_file():
+            command_template = self.settings.incremental_evaluate_command
+            if not command_template:
+                raise RuntimeError(
+                    "未配置增量模型评估命令；请设置 DAHUA_STUDENT_PYTHON 或 DAHUA_INCREMENTAL_EVALUATE_COMMAND"
+                )
+            evaluation_annotation = self.incremental.candidate_annotation(round_)
+            values = {
+                "config": self.settings.repository_root / "third_party/ProtoGCN/configs/campus6/rtm_s_coco17_k400_2d_gap_full.py",
+                "candidate_checkpoint": candidate_checkpoint,
+                "baseline_checkpoint": self.settings.training_baseline_checkpoint() or "",
+                "evaluation_annotation": evaluation_annotation,
+                "old_annotation": self.incremental.all_root / "annotations_with_all.pkl",
+                "new_annotation": round_.incoming_annotation,
+                "metrics_file": metrics_file,
+                "work_dir": round_.root,
+            }
+            command = render_command(
+                command_template,
+                **{key: shlex.quote(str(value)) for key, value in values.items()},
+            )
+            with self.exclusive_gpu_slot():
+                log = self._execute(command)
+            if log:
+                metadata["evaluation_log_tail"] = log[-4000:]
+        if not metrics_file.is_file():
+            raise RuntimeError("增量模型评估未生成 candidate_metrics.json")
+        try:
+            payload = json.loads(metrics_file.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError) as exc:
+            raise RuntimeError("增量模型评估报告不是有效 JSON") from exc
+        candidate = payload.get("candidate", payload)
+        baseline = payload.get("baseline")
+        if not isinstance(candidate, dict) or not isinstance(baseline, dict):
+            raise RuntimeError("评估报告必须包含 candidate 和 baseline 指标")
+        return {
+            "metrics_file": str(metrics_file),
+            "candidate": candidate,
+            "baseline": baseline,
+            "splits": payload.get("splits") or {},
+        }
+
+    def _promote_incremental_candidate(
+        self, round_: IncrementalRound, candidate_checkpoint: Path, evaluation: dict
+    ) -> dict:
+        gate_config = self.settings.incremental_release_gates()
+        gate_report = evaluate_release(
+            evaluation["candidate"],
+            evaluation["baseline"],
+            ReleaseGates(**gate_config),
+        )
+        if not gate_report["passed"]:
+            error = RuntimeError("增量候选模型未通过 release gate，campus_all 和生产模型均未改变")
+            error.gate_report = gate_report
+            raise error
+        model_id = "campus6-incremental-{}".format(safe_name(round_.round_id))
+        registry = ModelRegistry(self.settings.incremental_model_registry_path)
+        config = self.settings.repository_root / "third_party/ProtoGCN/configs/campus6/rtm_s_coco17_k400_2d_gap_full.py"
+        candidate_metrics = dict(evaluation["candidate"])
+        global_metrics = ((evaluation.get("splits") or {}).get("candidate") or {}).get("global") or {}
+        if global_metrics:
+            candidate_metrics.update({
+                "overall_accuracy": global_metrics.get("accuracy"),
+                "mean_class_accuracy": global_metrics.get("macro_recall"),
+                "per_class": global_metrics.get("per_class") or {},
+            })
+        record = registry.register({
+            "model_id": model_id,
+            "dataset_id": "campus_all+" + round_.round_id,
+            "checkpoint_path": str(candidate_checkpoint),
+            "config_path": str(config),
+            "config_hash": file_hash(config),
+            "checkpoint_hash": file_hash(candidate_checkpoint),
+            "metrics": candidate_metrics,
+            "release_gate": gate_report,
+            "edge_size_bytes": candidate_checkpoint.stat().st_size,
+            "latency": {"device": "incremental-training", "milliseconds": candidate_metrics.get("latency_ms")},
+        })
+        registry.transition(model_id, "validated")
+        registry.transition(model_id, "canary")
+        registry.transition(model_id, "production")
+        pointer = ProductionPointer(self.settings.incremental_production_pointer_path)
+        pointer.promote(model_id, gate_report)
+        return {"model_id": model_id, "registry": record, "gate_report": gate_report}
 
     def _auto_retry_allowed(self, sample_id: str, action: str) -> bool:
         """Gate automatic resubmission of failed jobs in the continuous loop.

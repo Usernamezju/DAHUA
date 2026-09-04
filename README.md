@@ -274,13 +274,20 @@ RTMDet/RTMPose COCO-17 和 Campus6 ProtoGCN；Qwen 不是本机依赖，只有�
 待处理难例**冻结，使用固定的分组、分层 70/15/15 划分生成训练输入。若一分钟检查时
 已有 53 条，则 53 条会一起进入同一轮，不会只上传前 50 条。
 
-启用远程训练时，冻结的 `training_annotations_with_all.pkl` 上传到服务器并得到 SCP 成功
-确认后，本地会将该批次合并进初始等同于 `campus6_baseline` 的 `dataset/campus_all/`，并
-清理 `campus_increment` 的已上传样本；服务器随后继续训练。该远程任务运行在后台，不会
-获取或终止本地 RTMPose/ProtoGCN 视频推理任务。上传失败时本地数据保留；上传已确认但
-远程训练失败时，服务器保留冻结标注和工作目录以便追溯/重试。可用 `DAHUA_DATASET_ROOT`、
-`DAHUA_INCREMENTAL_BATCH_SIZE` 和 `DAHUA_INCREMENTAL_TRAIN_COMMAND` 覆盖默认位置、
-阈值和训练命令。
+启用远程训练时，冻结的 `training_annotations_with_all.pkl` 上传到服务器；训练完成后先在
+旧数据、新数据和合并快照上运行候选模型评估，再执行总体 Macro-F1、新样本 Macro-F1、旧数据
+遗忘、危险类别召回、ECE 和部署大小 release gate。只有 gate 全部通过，候选权重才会注册并自动
+切换 Production，随后本地才把该批次合并进 `dataset/campus_all/` 并清理已完成样本。任一步骤
+失败或 gate 拒绝，`campus_increment` 和 round 工作目录都会保留以便追溯/重试。
+
+默认评估命令由 `DAHUA_STUDENT_PYTHON` 调用 `dahua_cup.pipeline.evaluate_incremental`；也可用
+`DAHUA_INCREMENTAL_EVALUATE_COMMAND` 覆盖（支持 `{config}`、`{candidate_checkpoint}`、
+`{baseline_checkpoint}`、`{evaluation_annotation}`、`{old_annotation}`、`{new_annotation}`、
+`{metrics_file}`、`{work_dir}` 占位符）。gate 阈值可通过 `DAHUA_INCREMENTAL_MIN_GLOBAL_F1_DELTA`、
+`DAHUA_INCREMENTAL_MIN_NEW_F1_DELTA`、`DAHUA_INCREMENTAL_MAX_OLD_F1_DROP`、
+`DAHUA_INCREMENTAL_MIN_DANGEROUS_RECALL_DELTA`、`DAHUA_INCREMENTAL_MAX_ECE_INCREASE` 和
+`DAHUA_INCREMENTAL_MAX_EDGE_SIZE_BYTES` 调整。可用 `DAHUA_DATASET_ROOT`、
+`DAHUA_INCREMENTAL_BATCH_SIZE` 和 `DAHUA_INCREMENTAL_TRAIN_COMMAND` 覆盖默认位置、阈值和训练命令。
 
 如果已在 **系统设置** 启用 Qwen SSH 连接，达到 50 条时会复用同一受信服务器：上传冻结的
 `training_annotations_with_all.pkl`，在服务器端自动挑选一张空闲 GPU（至少 20 GiB 空闲、利用率

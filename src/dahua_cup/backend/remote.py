@@ -273,6 +273,13 @@ def run_remote_incremental_training(
     init_checkpoint: str,
     epochs: int,
     gpu_id: str = "auto",
+    evaluation_command: str = "",
+    config_path: str = "",
+    evaluation_annotation: Optional[Path] = None,
+    old_annotation: Optional[Path] = None,
+    new_annotation: Optional[Path] = None,
+    baseline_checkpoint: str = "",
+    local_output_dir: Optional[Path] = None,
 ) -> dict[str, str]:
     """Upload a frozen annotation and run Campus6 fine-tuning remotely.
 
@@ -318,6 +325,21 @@ def run_remote_incremental_training(
         ],
         timeout=300,
     )
+    remote_eval = {}
+    if evaluation_annotation is not None:
+        for source, name in (
+            (evaluation_annotation, "evaluation_annotations_with_all.pkl"),
+            (old_annotation, "old_annotations_with_all.pkl"),
+            (new_annotation, "new_annotations_with_all.pkl"),
+        ):
+            if source is None or not Path(source).is_file():
+                raise FileNotFoundError("incremental evaluation annotation is missing")
+            invoke(scp + [str(source), target + ":" + remote_dir + "/" + name], timeout=300)
+        remote_eval = {
+            "evaluation_annotation": relative + "/evaluation_annotations_with_all.pkl",
+            "old_annotation": relative + "/old_annotations_with_all.pkl",
+            "new_annotation": relative + "/new_annotations_with_all.pkl",
+        }
     upload = {
         "remote_dir": remote_dir,
         "remote_annotation": remote_dir + "/training_annotations_with_all.pkl",
@@ -349,7 +371,49 @@ CUDA_VISIBLE_DEVICES=\"$gpu_id\" PYTHONPATH=src${{PYTHONPATH:+:$PYTHONPATH}} {py
         epochs=int(epochs),
     )
     output = invoke(ssh + ["sh -lc " + shlex.quote(command)], timeout=24 * 3600)
-    return {
+    result = {
         **upload,
         "log_tail": output[-4000:],
     }
+    if evaluation_command or local_output_dir is not None:
+        candidate_query = "find {work_dir} -type f -name 'best_top1_acc*.pth' -printf '%T@ %p\\n' | sort -nr | head -1 | cut -d' ' -f2-".format(
+            work_dir=shlex.quote(remote_dir + "/work_dir")
+        )
+        candidate_remote = invoke(ssh + ["sh -lc " + shlex.quote(candidate_query)], timeout=30).strip()
+        if not candidate_remote:
+            raise RuntimeError("远程增量训练未生成 best_top1_acc*.pth 候选权重")
+        result["candidate_checkpoint_remote"] = candidate_remote
+    if evaluation_command:
+        if not config_path or not baseline_checkpoint:
+            raise ValueError("remote candidate evaluation requires config and baseline checkpoint")
+        if not remote_eval:
+            raise ValueError("remote candidate evaluation requires annotation snapshots")
+        remote_metrics = remote_dir + "/candidate_metrics.json"
+        values = {
+            "config": config_path,
+            "candidate_checkpoint": candidate_remote,
+            "baseline_checkpoint": baseline_checkpoint,
+            "evaluation_annotation": remote_eval["evaluation_annotation"],
+            "old_annotation": remote_eval["old_annotation"],
+            "new_annotation": remote_eval["new_annotation"],
+            "metrics_file": remote_metrics,
+            "work_dir": remote_dir + "/work_dir",
+        }
+        rendered = evaluation_command.format_map({key: shlex.quote(str(value)) for key, value in values.items()})
+        evaluate = "cd {root} && PYTHONPATH=src${{PYTHONPATH:+:$PYTHONPATH}} {command}".format(
+            root=shlex.quote(root), command=rendered
+        )
+        eval_output = invoke(ssh + ["sh -lc " + shlex.quote(evaluate)], timeout=24 * 3600)
+        result["evaluation_log_tail"] = eval_output[-4000:]
+        if local_output_dir is not None:
+            destination = Path(local_output_dir).expanduser().resolve()
+            destination.mkdir(parents=True, exist_ok=True)
+            local_checkpoint = destination / "candidate_checkpoint.pth"
+            local_metrics = destination / "candidate_metrics.json"
+            invoke(scp + [target + ":" + candidate_remote, str(local_checkpoint)], timeout=600)
+            invoke(scp + [target + ":" + remote_metrics, str(local_metrics)], timeout=120)
+            result["candidate_checkpoint"] = str(local_checkpoint)
+            result["metrics_file"] = str(local_metrics)
+        else:
+            result["metrics_file_remote"] = remote_metrics
+    return result

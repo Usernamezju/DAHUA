@@ -513,6 +513,35 @@ class CampusIncrementalDataset:
         result.update({"round_id": round_.round_id, "merged_sample_count": len(round_.sample_ids), "campus_all_sample_count": len(merged_annotations)})
         return result
 
+    def candidate_annotation(self, round_: IncrementalRound) -> Path:
+        """Materialize the pre-merge annotation used for release evaluation.
+
+        The candidate must be evaluated on old and newly reviewed samples
+        together, while ``campus_all`` remains untouched until the release
+        gates pass.  This snapshot is disposable and lives inside the round
+        directory so a failed candidate remains fully auditable.
+        """
+        current = _load_annotation(self.all_root / "annotations_with_all.pkl")
+        incoming = _load_annotation(round_.incoming_annotation)
+        current_annotations = list(current.get("annotations") or [])
+        incoming_annotations = list(incoming.get("annotations") or [])
+        names = [str(item["frame_dir"]) for item in current_annotations]
+        existing = set(names)
+        for item in incoming_annotations:
+            frame_dir = str(item["frame_dir"])
+            if frame_dir in existing:
+                raise ValueError("cannot evaluate: an incoming sample already exists in campus_all")
+            names.append(frame_dir)
+            existing.add(frame_dir)
+        split = {key: list(values) for key, values in (current.get("split") or {}).items()}
+        for key, values in (incoming.get("split") or {}).items():
+            split.setdefault(key, []).extend(values)
+        split.setdefault("all", names)
+        split["all"] = names
+        destination = round_.root / "evaluation_annotations_with_all.pkl"
+        _write_annotation(destination, current_annotations + incoming_annotations, split)
+        return destination
+
     def fail_round(self, round_: IncrementalRound, message: str) -> None:
         state = _load_json(self.increment_state_path)
         if state.get("active_round_id") == round_.round_id:

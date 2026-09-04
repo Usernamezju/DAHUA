@@ -224,6 +224,57 @@ class Settings:
             f"--init-checkpoint {shlex.quote(str(checkpoint))} --epochs 10 --distill --lora"
         )
 
+    def default_incremental_evaluate_command(self) -> str:
+        """Return the built-in candidate/baseline evaluation command."""
+        python_bin = os.environ.get("DAHUA_STUDENT_PYTHON", "").strip()
+        if not python_bin or not Path(python_bin).is_file():
+            return ""
+        return (
+            f"{shlex.quote(python_bin)} -m dahua_cup.pipeline.evaluate_incremental "
+            "--config {config} --candidate-checkpoint {candidate_checkpoint} "
+            "--baseline-checkpoint {baseline_checkpoint} --annotation {evaluation_annotation} "
+            "--old-annotation {old_annotation} --new-annotation {new_annotation} "
+            "--output {metrics_file} --lora"
+        )
+
+    @property
+    def incremental_evaluate_command(self) -> str:
+        return os.environ.get(
+            "DAHUA_INCREMENTAL_EVALUATE_COMMAND",
+            self.default_incremental_evaluate_command(),
+        ).strip()
+
+    @property
+    def incremental_model_registry_path(self) -> Path:
+        return self.runtime_root / "settings" / "model_registry.jsonl"
+
+    @property
+    def incremental_production_pointer_path(self) -> Path:
+        return self.runtime_root / "settings" / "production_pointer.json"
+
+    def incremental_release_gates(self) -> dict[str, float | int]:
+        """Read release thresholds while keeping safe, conservative defaults."""
+        def number(name: str, default: float) -> float:
+            configured = os.environ.get(name, "").strip()
+            if not configured:
+                return default
+            try:
+                value = float(configured)
+            except ValueError as exc:
+                raise ValueError(f"{name} must be a finite number") from exc
+            if not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite number")
+            return value
+
+        return {
+            "minimum_global_macro_f1_delta": number("DAHUA_INCREMENTAL_MIN_GLOBAL_F1_DELTA", 0.0),
+            "minimum_new_macro_f1_delta": number("DAHUA_INCREMENTAL_MIN_NEW_F1_DELTA", 0.0),
+            "maximum_old_macro_f1_drop": number("DAHUA_INCREMENTAL_MAX_OLD_F1_DROP", 0.02),
+            "minimum_dangerous_recall_delta": number("DAHUA_INCREMENTAL_MIN_DANGEROUS_RECALL_DELTA", 0.0),
+            "maximum_ece_increase": number("DAHUA_INCREMENTAL_MAX_ECE_INCREASE", 0.02),
+            "maximum_edge_size_bytes": int(number("DAHUA_INCREMENTAL_MAX_EDGE_SIZE_BYTES", 50 * 1024 * 1024)),
+        }
+
     def incremental_remote(self) -> dict:
         """Reuse the trusted Qwen SSH endpoint for server-side GCN training."""
         remote = dict(self.qwen_remote())
@@ -445,12 +496,25 @@ class Settings:
             "m1kd_best_full/M1KD.runtime.int8.pt"
         )
         bundled_default = self.repository_root / "models" / "student" / "M1KD.int8.pt"
-        candidate = (
-            Path(configured).expanduser()
-            if configured
-            else server_default if server_default.is_file()
-            else bundled_default
-        )
+        candidate = Path(configured).expanduser() if configured else None
+        if candidate is None:
+            pointer_path = self.incremental_production_pointer_path
+            registry_path = self.incremental_model_registry_path
+            if pointer_path.is_file() and registry_path.is_file():
+                try:
+                    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+                    current_id = str(pointer.get("current_model_id") or "")
+                    records = [
+                        json.loads(line) for line in registry_path.read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    ]
+                    matches = [row for row in records if str(row.get("model_id")) == current_id and row.get("status") == "production"]
+                    if matches and matches[-1].get("checkpoint_path"):
+                        candidate = Path(str(matches[-1]["checkpoint_path"])).expanduser()
+                except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                    candidate = None
+        if candidate is None:
+            candidate = server_default if server_default.is_file() else bundled_default
         candidate = candidate.resolve()
         return candidate if candidate.is_file() else None
 
