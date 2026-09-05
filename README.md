@@ -58,6 +58,23 @@ it is rebuilt automatically from `requirements/skel.txt` (Python 3.8 with the
 PyTorch 1.10.2 / CUDA 11.3 Conda build). An existing environment is never
 modified.
 
+## Dataset
+
+The Campus6 delivery dataset is published as a GitHub release asset and is not
+tracked by Git. It contains `annotations_with_all.pkl` plus 358 COCO-17 feature
+files and digest-verified RGB videos under `campus_all/`, split train 252 /
+val 53 / test 53.
+
+```bash
+bash scripts/download_dataset.sh
+```
+
+Downloads `campus_all_release_20260905.tar` from the `campus6-data-v1.0.0`
+release, verifies its SHA-256, and unpacks it into `dataset/campus_all/`. No
+authentication needed. To fetch it manually, download
+`https://github.com/Usernamezju/DAHUA/releases/download/campus6-data-v1.0.0/campus_all_release_20260905.tar`
+and run `tar -xf` inside `dataset/`.
+
 ## Web UI (server)
 
 Run the Web service from the repository deployed on the server:

@@ -17,6 +17,7 @@ Web 是 Campus6 校园行为识别系统的交付界面，不是数据集筛选�
 ## 基线与增量数据
 
 - 初始正式基线：`annotations_with_all.pkl`，包含当前 Campus6 模型使用的 358 条 COCO-17 骨架样本，划分为 Train 252 / Val 53 / Test 53。
+- 数据集以 GitHub Release 资产发布（`campus6-data-v1.0.0` → `campus_all_release_20260905.tar`），下载并校验解包：`bash scripts/download_dataset.sh`，解包至 `dataset/campus_all/`。
 - 第 9 章的 300 条不是初始数据集总数，而是一次增量训练批次：50 条新难例 + 250 条类别均衡历史样本。
 - 线上审核、Qwen 结果、人工标签与候选模型均使用独立运行目录，不能污染初始基线标注。
 

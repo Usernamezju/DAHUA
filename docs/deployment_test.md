@@ -21,12 +21,23 @@ Downloads `models.tar.gz`, verifies its SHA-256 against the published
 `models.tar.gz.sha256` sidecar, unpacks it into the repository root, and
 checks that `models/MANIFEST.json` is in place. No authentication needed.
 
-## 3. Create the two role environments
+## 3. Download dataset (GitHub release asset)
+
+```bash
+bash scripts/download_dataset.sh
+```
+
+Downloads `campus_all_release_20260905.tar` from the `campus6-data-v1.0.0`
+release, verifies its SHA-256, and unpacks it into `dataset/campus_all/`
+(annotations, 358 COCO-17 features and digest-verified RGB videos, train 252 /
+val 53 / test 53). No authentication needed.
+
+## 4. Create the two role environments
 
 Two environments are required because the delivered ProtoGCN student model
 pins MMCV 1.5.0 while RTMPose extraction needs MMCV 2.1.0.
 
-### 3.1 Web + pose extraction (`dahua_test_web`, Python 3.10)
+### 4.1 Web + pose extraction (`dahua_test_web`, Python 3.10)
 
 ```bash
 conda create -n dahua_test_web python=3.10 -y
@@ -43,7 +54,7 @@ python -m pip install \
   opencv-python fastapi uvicorn python-multipart
 ```
 
-### 3.2 Student inference (`dahua_test_gcn`, Python 3.8)
+### 4.2 Student inference (`dahua_test_gcn`, Python 3.8)
 
 ```bash
 conda create -n dahua_test_gcn python=3.8 -y
@@ -58,7 +69,7 @@ python -m pip install -r requirements/skel.txt \
 python -m pip install python-multipart
 ```
 
-## 4. Launch (CPU full loop)
+## 5. Launch (CPU full loop)
 
 ```bash
 # CPU test uses the MMPose FP32 diagnostic backend; override the default
@@ -76,7 +87,7 @@ bash scripts/run_local_visualization.sh \
 The launcher preflights the three environments; on success it prints
 `Starting local Campus6 Web at http://127.0.0.1:8000`.
 
-## 5. Verification checklist
+## 6. Verification checklist
 
 1. Open `http://127.0.0.1:8000`; the seven navigation pages respond.
 2. Upload an RGB video on the "GCN 推理可视化" page.
@@ -88,7 +99,7 @@ The launcher preflights the three environments; on success it prints
 6. Optional: place `annotations_with_all.pkl` under `dataset/campus6_baseline/`
    to browse the 358-sample baseline.
 
-## 6. GPU / TensorRT FP16 (optional)
+## 7. GPU / TensorRT FP16 (optional)
 
 ```bash
 conda create -n dahua_test_pose_fp16 python=3.8 -y
@@ -110,4 +121,11 @@ gh release create v1.0.0-rc1 \
   models.tar.gz models.tar.gz.sha256 \
   --title "Campus6 model assets v1.0.0-rc1" \
   --notes "M1KD INT8 student, FP32 pose weights, TensorRT FP16 engines, pretrained checkpoints"
+
+# Dataset delivery asset (campus_all = annotations + features + videos).
+sha256sum campus_all_release_20260905.tar > campus_all_release_20260905.tar.sha256
+gh release create campus6-data-v1.0.0 \
+  campus_all_release_20260905.tar campus_all_release_20260905.tar.sha256 \
+  --title "Campus6 all dataset v1.0.0" \
+  --notes "358-sample COCO-17 delivery dataset; train 252 / val 53 / test 53"
 ```
