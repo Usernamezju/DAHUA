@@ -23,7 +23,7 @@ tests/                unit and integration tests
 models/               local weights (ignored by Git; manifest is tracked)
 docs/                 design, operations and acceptance material
 runtime/              local runtime data (ignored by Git)
-scripts/              shell launchers only
+scripts/              shell launchers, setup and packaging utilities
 ```
 
 This is a standard Python `src` layout: `src/dahua_cup/` is the importable
@@ -45,7 +45,9 @@ python -m pytest
 ```
 
 For the optional Qwen teacher, additionally install `.[teacher]` in its
-dedicated environment and set `DAHUA_QWEN_MODEL_DIR`.
+dedicated environment and set `DAHUA_QWEN_MODEL_DIR`. For the split-role
+deployment environments (Web/pose, student, TensorRT FP16), use
+`bash scripts/setup_local.sh` instead; see Model download below.
 
 The remote Qwen host installs its own stack from `requirements/server.txt`.
 Configure only its SSH host, port, user, and project root in **系统设置**; its
@@ -57,6 +59,50 @@ environment: when `DAHUA_INCREMENTAL_REMOTE_PYTHON` (default
 it is rebuilt automatically from `requirements/skel.txt` (Python 3.8 with the
 PyTorch 1.10.2 / CUDA 11.3 Conda build). An existing environment is never
 modified.
+
+## Model download
+
+The deliverable model weights are published as two GitHub release assets and
+are not tracked by Git. Each deployment side downloads only what it needs:
+
+| Asset | For | Contents | Size |
+|---|---|---|---|
+| `models-server.tar.gz` | server (training + Qwen host) | FP32 GCN training/regression baseline (`campus6_protogcn_gap_fp32_epoch40.pth`), GAP semantic embeddings | ~41 MB |
+| `models-edge.tar.gz` | local inference | TensorRT FP16 pose engines (`models/pose/fp16/`), M1KD INT8 student | ~29 MB |
+
+**Server** (one-shot environment + assets):
+
+```bash
+bash scripts/setup_server.sh
+```
+
+Creates the `skel_gcn38` Conda environment when missing (the same command
+sequence as the automatic rebuild in `dahua_cup.backend.remote`), downloads
+`models-server.tar.gz` from the `models-v1.1.0` release, verifies its SHA-256,
+and unpacks it into the repository root. Add `--provision-teacher` for the
+Qwen `.venv-qwen` environment. No authentication needed.
+
+**Local** (one-shot environments + assets):
+
+```bash
+bash scripts/setup_local.sh
+```
+
+Creates the Web/RTMDet-RTMPose (MMCV 2.x) and ProtoGCN (MMCV 1.5.0) Conda
+environments, downloads `models-edge.tar.gz` from the `models-v1.1.0` release,
+verifies its SHA-256, and unpacks it into the repository root. Use
+`--device gpu --provision-pose-fp16` for the TensorRT FP16 pose environment.
+
+Both scripts unpack in-archive `models/MANIFEST.<server|edge>.json` and
+`models/SHA256SUMS.<server|edge>`; pass `--verify-files` to check every
+extracted file. `models/MANIFEST.json` stays the single authoritative
+manifest and records each entry's `release_asset`.
+
+Not packaged: the Kinetics-400 pretraining checkpoints (the ProtoGCN configs
+reference the server-side copies) and the FP32 `rtmdet-s_coco80.pth` /
+`rtmpose-s_coco17.pth` diagnostic checkpoints — download those on demand from
+the `source_url` recorded in `models/MANIFEST.json`. The dataset is a
+separate release; see the Dataset section below.
 
 ## Dataset
 
@@ -108,6 +154,18 @@ effect after restarting the service:
   --student-env skel_gcn38 \
   --teacher-env llm_env
 ```
+
+A server provisioned with `setup_server.sh` does not carry the local-inference
+models, and `run_visualization.sh` hard-checks the default M1KD checkpoint
+before starting. Override the student checkpoint and pose backend first:
+
+```bash
+export DAHUA_CAMPUS6_DEPLOYMENT_CHECKPOINT=/workspace/data/xzz_data/DAHUA/experiments/acceptance/campus6/m1kd_best_full/M1KD.runtime.int8.pt
+export DAHUA_POSE_BACKEND=<existing server pose backend>
+```
+
+or fetch the edge package on the server too with
+`bash scripts/setup_local.sh --skip-env`.
 
 For a developer workstation, use the equivalent local launcher and supply the
 three Conda interpreters explicitly.  It preflights FastAPI upload support,
@@ -172,7 +230,8 @@ artifacts do not need to be overwritten. FP32 MMPose remains available for
 diagnosis; the experimental INT8 backend is selected only when explicitly
 configured.
 
-The validated FP16 package is kept at the paths below (or at
+The validated FP16 package is unpacked by `bash scripts/setup_local.sh` from
+the `models-edge.tar.gz` release asset and kept at the paths below (or at
 `DAHUA_POSE_FP16_MODEL_ROOT`):
 
 ```text

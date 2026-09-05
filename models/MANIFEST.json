@@ -1,5 +1,9 @@
 {
   "schema_version": "dahua_model_manifest.v1",
+  "release_packages": {
+    "models-server.tar.gz": "FP32 GCN training/regression baseline and GAP semantic assets for the server",
+    "models-edge.tar.gz": "TensorRT FP16 pose engines under models/pose/fp16/ plus the M1KD INT8 student checkpoint for local inference"
+  },
   "edge_default": {
     "path": "models/student/M1KD.int8.pt",
     "sha256": "570f775e98c1643fd25c4b96e8478f2aa0c986e6beb929e355a28eb7d779c33d",
@@ -7,6 +11,7 @@
     "size_mib": 5.4041948318481445,
     "format": "portable_qat_int8_state.runtime_safe",
     "training_recipe": "M1KD: QAT INT8 + logits KD",
+    "release_asset": "models-edge.tar.gz",
     "acceptance": {
       "validation": {"correct": 47, "total": 53, "accuracy": 0.8867924528301887},
       "test": {"correct": 46, "total": 53, "accuracy": 0.8679245283018868},
@@ -24,19 +29,24 @@
       "path": "models/student/campus6_protogcn_gap_fp32_epoch40.pth",
       "sha256": "e0656dd850b65c987a7167847d37429c6580cdbd51eda39777672cb1b85ca254",
       "bytes": 42497873,
-      "role": "Campus6 GAP FP32 teacher and regression baseline"
+      "role": "Campus6 GAP FP32 teacher and regression baseline",
+      "release_asset": "models-server.tar.gz"
     },
     {
       "path": "models/pretrained/k400_joint_full_epoch150.pth",
       "sha256": "1f71b45dd9741828f0cd1ab1940a5d5f5bf687d83231c805e710f9f1b176ef79",
       "bytes": 35758566,
-      "role": "Kinetics-400 ProtoGCN joint pretraining checkpoint"
+      "role": "Kinetics-400 ProtoGCN joint pretraining checkpoint",
+      "release_asset": null,
+      "note": "Not packaged: ProtoGCN configs reference the server-side /workspace/data/xzz_data/DAHUA/models/protogcn_pretrained/... copy; the repository file is a redundant archive."
     },
     {
       "path": "models/pretrained/k400_joint_backbone_only.pth",
       "sha256": "2ad558a297a8dd72d30e8792be2dc3a30d7dd8c85d4ae8dfd56940275a434f37",
       "bytes": 34688298,
-      "role": "Kinetics-400 backbone-only initialization for Campus6 fine-tuning"
+      "role": "Kinetics-400 backbone-only initialization for Campus6 fine-tuning",
+      "release_asset": null,
+      "note": "Not packaged: see k400_joint_full_epoch150.pth note."
     }
   ],
   "semantic_assets": [
@@ -44,7 +54,8 @@
       "path": "models/semantic/campus6_gap_clip_v3.npy",
       "sha256": "666718589f75791a50aadec6fdd2339ca73f546694181af0c4d5ddb1a6d930d2",
       "bytes": 61568,
-      "role": "Frozen six-class, five-part GAP text embeddings"
+      "role": "Frozen six-class, five-part GAP text embeddings",
+      "release_asset": "models-server.tar.gz"
     }
   ],
   "pose_assets": [
@@ -53,6 +64,8 @@
       "sha256": "387a891e157cf0ab57d76b3ffc17bf77247089d672532427930b3140f9e789d6",
       "bytes": 91450098,
       "role": "default RTMDet-S COCO person detector (class 0)",
+      "release_asset": null,
+      "note": "Not packaged: consumed only by the mmpose_fp32 diagnostic backend and FP16 quality-comparison scripts. Download from source_url on demand.",
       "source_url": "https://download.openmmlab.com/mmdetection/v3.0/rtmdet/rtmdet_s_8xb32-300e_coco/rtmdet_s_8xb32-300e_coco_20220905_161602-387a891e.pth"
     },
     {
@@ -60,6 +73,8 @@
       "sha256": "29dcacbb5c5f3ab2f03a67fedcb58cf7287f93b9a8a9d893f42416b63fc304ba",
       "bytes": 22007001,
       "role": "default RTMPose-S COCO-17 top-down pose estimator",
+      "release_asset": null,
+      "note": "Not packaged: consumed only by the mmpose_fp32 diagnostic backend and FP16 quality-comparison scripts. Download from source_url on demand.",
       "source_url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/rtmpose-s_simcc-coco_pt-aic-coco_420e-256x192-8edcf0d7_20230127.pth"
     }
   ]

@@ -29,3 +29,7 @@ models/**/*.rknn
 models/**/*.task
 !models/MANIFEST.json
 !models/**/*.json
+# Package build products written by scripts/package_models.py (kept out of
+# the working tree by the dist/ staging, listed defensively here).
+models/MANIFEST.*.json
+models/SHA256SUMS.*
